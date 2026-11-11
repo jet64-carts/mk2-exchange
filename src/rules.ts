@@ -36,10 +36,11 @@ export const SIGNED_FORM = "jet64-exchange-1";
 // A maker's name: lowercase ASCII letters, digits, - and _.
 export const NAME_PATTERN = /^[a-z0-9_-]{2,24}$/;
 
-// Names nobody may claim: the machine's, its maker's handle, and the machine's own carts'.
+// Names nobody may claim: the machine's words and the machine's own carts'. Its maker
+// claims their own name by publishing first.
 export const RESERVED_NAMES = [
   "jet64", "mk2", "sysop", "admin", "administrator", "root", "exchange", "official", "staff", "support",
-  "moderator", "mod", "help", "system", "machine", "island", "73v3",
+  "moderator", "mod", "help", "system", "machine", "island",
   "code", "paint", "theme", "export", "shader", "tune", "sound", "scenery", "desert", "lunar", "slate",
 ];
 
