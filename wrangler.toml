@@ -1,0 +1,32 @@
+# mk2-exchange/wrangler.toml
+#
+# The Worker on Cloudflare's free plan, which refuses past its limits rather
+# than billing (docs/exchange.md §8 in the machine's repository). Never move
+# this account to Workers Paid without changing the caps first.
+
+name = "jet64-exchange"
+main = "src/index.ts"
+compatibility_date = "2026-10-28"
+workers_dev = false
+routes = [{ pattern = "exchange.jet64.com", custom_domain = true }]
+
+[vars]
+# David's public key (base64url), printed by `node scripts/key.mjs new sysop.key`.
+SYSOP_KEY = ""
+GITHUB_REPO = "jet64-carts/mk2-exchange"
+
+# Private: no public access, no r2.dev address. Every read goes through the Worker.
+[[r2_buckets]]
+binding = "DISKS"
+bucket_name = "jet64-exchange-disks"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jet64-exchange"
+# Printed by `npx wrangler d1 create jet64-exchange`.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# Secrets, set with `npx wrangler secret put <NAME>`:
+#   GITHUB_TOKEN   a fine-grained token for this repository alone, Actions: read and write
+#   VERDICT_TOKEN  a long random string, also saved as this repository's Actions secret
+#   IP_SALT        a long random string

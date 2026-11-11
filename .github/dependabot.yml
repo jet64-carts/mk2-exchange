@@ -1,0 +1,11 @@
+# Proposes new SHAs for the pinned actions, so the pins never go stale unseen.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly

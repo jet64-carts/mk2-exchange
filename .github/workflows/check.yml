@@ -1,0 +1,65 @@
+# mk2-exchange/.github/workflows/check.yml
+#
+# The validator (docs/exchange.md §6 in the machine's repository), started by
+# the Worker for each upload. Two jobs: the first reads the stranger's disk with
+# no permissions and no secrets; the second never touches it and holds the one
+# secret. Every action is pinned by its full commit SHA and the runner by its
+# image, so nothing moves underneath.
+name: check
+
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: The upload to check
+        required: true
+
+permissions: {}
+
+env:
+  EXCHANGE: https://exchange.jet64.com
+  # mk2disk for Linux x86-64, built by scripts/release-validator.sh from the
+  # machine's own disk/ and pinned here by its SHA-256.
+  VALIDATOR_URL: https://github.com/jet64-carts/mk2-exchange/releases/download/validator-0.4.0/mk2disk-linux-x86_64
+  VALIDATOR_SHA256: dd05cfc26aa894ed68487c0d1cc78ce844cf774488a8b494ba786c0bc5842cb5
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      verdict: ${{ steps.check.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch the validator
+        run: |
+          curl -fsSL --max-time 60 "$VALIDATOR_URL" -o "$RUNNER_TEMP/mk2disk"
+          echo "$VALIDATOR_SHA256  $RUNNER_TEMP/mk2disk" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/mk2disk"
+      - id: check
+        name: Check the disk
+        env:
+          ID: ${{ inputs.id }}
+        run: |
+          verdict=$(VALIDATOR="$RUNNER_TEMP/mk2disk" scripts/check.sh "$ID")
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+
+  report:
+    needs: check
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Hand back the verdict
+        env:
+          ID: ${{ inputs.id }}
+          VERDICT: ${{ needs.check.outputs.verdict }}
+          VERDICT_TOKEN: ${{ secrets.VERDICT_TOKEN }}
+        run: scripts/report.sh "$ID"

@@ -1,0 +1,15 @@
+{
+  "name": "jet64-exchange",
+  "private": true,
+  "description": "The Jet64 Mk II exchange: one Cloudflare Worker, an R2 bucket and a D1 database",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "dev": "wrangler dev --local --ip 0.0.0.0 --port 8787",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261029.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.155.0"
+  }
+}

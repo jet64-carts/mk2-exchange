@@ -1,0 +1,6 @@
+node_modules/
+.wrangler/
+.dev.vars
+*.key
+tests/out/
+.secrets-set
