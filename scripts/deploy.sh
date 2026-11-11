@@ -36,7 +36,8 @@ if [ ! -f sysop.key ]; then
 fi
 
 echo "== the bucket"
-wrangler r2 bucket create jet64-exchange-disks 2>&1 | grep -v "already exists" || true
+buckets=$(wrangler r2 bucket list 2>/dev/null || true)
+grep -q "jet64-exchange-disks" <<<"$buckets" || wrangler r2 bucket create jet64-exchange-disks
 
 echo "== the database"
 if grep -q "database_id = \"$ZERO_ID\"" wrangler.toml; then
