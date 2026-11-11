@@ -12,7 +12,7 @@ routes = [{ pattern = "exchange.jet64.com", custom_domain = true }]
 
 [vars]
 # David's public key (base64url), printed by `node scripts/key.mjs new sysop.key`.
-SYSOP_KEY = ""
+SYSOP_KEY = "Q6cAXGcaMEEQ3O5L60NYK77DvbqNr1t7zG0tqLGzr8M"
 GITHUB_REPO = "jet64-carts/mk2-exchange"
 
 # Private: no public access, no r2.dev address. Every read goes through the Worker.
@@ -24,7 +24,7 @@ bucket_name = "jet64-exchange-disks"
 binding = "DB"
 database_name = "jet64-exchange"
 # Printed by `npx wrangler d1 create jet64-exchange`.
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "6a7f0586-938d-4981-829a-41e41dd4c6b6"
 
 # Secrets, set with `npx wrangler secret put <NAME>`:
 #   GITHUB_TOKEN   a fine-grained token for this repository alone, Actions: read and write
