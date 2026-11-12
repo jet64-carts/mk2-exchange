@@ -11,9 +11,14 @@
 //   node scripts/exchange.mjs state <id>                      where an upload stands
 //   node scripts/exchange.mjs index                           the catalogue
 //   node scripts/exchange.mjs report <file> <id>              report a disk
+//   node scripts/exchange.mjs remove <file> <id>              take down your own cart, every version
+//   node scripts/exchange.mjs label <id> <out> [file]         save a disk's label; signed by the
+//                                                             sysop's key, a hidden disk's too
 //   node scripts/exchange.mjs sysop <file> <action> [id|maker] [new key|cart]
-//       pause, resume, yank <id>, hide <id>, unhide <id>, vouch <maker>,
-//       unvouch <maker>, revoke <maker>, rekey <maker> <key>, hidden,
+//       pause, resume, remove <id> (the whole cart; yank is its older name),
+//       hide <id>, keep <id> (a hidden disk was fine; unhide is its older name),
+//       ban <maker>, unban <maker>, vouch <maker>, unvouch <maker>,
+//       revoke <maker>, rekey <maker> <key>, hidden,
 //       zero <maker> <cart> (the cart's takes begin again at 0)
 //
 // EXCHANGE names the exchange; https://exchange.jet64.com when unset.
@@ -42,11 +47,13 @@ function publicOf(path) {
   return base64url(spki.subarray(spki.length - 32));
 }
 
-async function signed(keyPath, method, path, body, bodyHash = sha256(body ?? Buffer.alloc(0))) {
+// A request signed with the key at `keyPath`. One with no body, a GET among
+// them, is signed with the empty body's hash.
+async function signedRequest(keyPath, method, path, body, bodyHash = sha256(body ?? Buffer.alloc(0))) {
   const time = String(Math.floor(Date.now() / 1000));
   const message = [SIGNED_FORM, method, path, time, bodyHash].join("\n");
   const signature = sign(null, Buffer.from(message), loadKey(keyPath));
-  const response = await fetch(EXCHANGE + path, {
+  return fetch(EXCHANGE + path, {
     method,
     body,
     headers: {
@@ -58,7 +65,10 @@ async function signed(keyPath, method, path, body, bodyHash = sha256(body ?? Buf
     },
     duplex: "half",
   });
-  return say(response);
+}
+
+async function signed(...asked) {
+  return say(await signedRequest(...asked));
 }
 
 async function say(response) {
@@ -66,6 +76,15 @@ async function say(response) {
   console.log(text);
   if (!response.ok) process.exitCode = 1;
   return text;
+}
+
+// A disk's label saved to `out`, or the refusal said.
+async function saveLabel(id, out, keyPath) {
+  const path = `/label/${id}`;
+  const response = keyPath ? await signedRequest(keyPath, "GET", path) : await fetch(EXCHANGE + path);
+  if (!response.ok) return say(response);
+  writeFileSync(out, Buffer.from(await response.arrayBuffer()));
+  console.log(`saved ${out}, cache-control: ${response.headers.get("cache-control")}`);
 }
 
 const [command, ...rest] = process.argv.slice(2);
@@ -80,12 +99,14 @@ switch (command) {
   }
   case "state": await say(await fetch(`${EXCHANGE}/disks/${rest[0]}`)); break;
   case "index": await say(await fetch(`${EXCHANGE}/index`)); break;
-  case "report": await signed(rest[0], "POST", `/report/${rest[1]}`, undefined, sha256(Buffer.alloc(0))); break;
+  case "report": await signed(rest[0], "POST", `/report/${rest[1]}`); break;
+  case "remove": await signed(rest[0], "POST", `/remove/${rest[1]}`); break;
+  case "label": await saveLabel(rest[0], rest[1], rest[2]); break;
   case "sysop": {
     const [keyPath, action, target, second] = rest;
     const asked = { action };
-    if (["yank", "hide", "unhide"].includes(action)) asked.id = target;
-    if (["vouch", "unvouch", "revoke", "rekey", "zero"].includes(action)) asked.maker = target;
+    if (["remove", "yank", "hide", "keep", "unhide"].includes(action)) asked.id = target;
+    if (["ban", "unban", "vouch", "unvouch", "revoke", "rekey", "zero"].includes(action)) asked.maker = target;
     if (action === "rekey") asked.key = second;
     if (action === "zero") asked.name = second;
     const body = Buffer.from(JSON.stringify(asked));
@@ -93,6 +114,6 @@ switch (command) {
     break;
   }
   default:
-    console.error("usage: node scripts/exchange.mjs key|public|publish|state|index|report|sysop ...");
+    console.error("usage: node scripts/exchange.mjs key|public|publish|state|index|report|remove|label|sysop ...");
     process.exitCode = 2;
 }

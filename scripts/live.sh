@@ -5,7 +5,8 @@
 # thing, the Cloudflare API token (README step 1), typed or pasted unseen; with
 # CLOUDFLARE_API_TOKEN set it asks for nothing.
 #
-#   scripts/live.sh                the database brought up to date, the Worker deployed
+#   scripts/live.sh                the database brought up to date, the Worker deployed,
+#                                  and sysop.key copied where the workstation reads it
 #   scripts/live.sh 0.4.0-2        first a new validator, built from the machine's
 #                                  checkout, released as validator-0.4.0-2 and pinned in
 #                                  the workflow, that pin committed and pushed
@@ -18,7 +19,16 @@ set -euo pipefail
 readonly REPO=jet64-carts/mk2-exchange
 readonly ASSET=mk2disk-linux-x86_64
 readonly WORKFLOW=.github/workflows/check.yml
+# Where the workstation looks for the sysop's key, to show David's switches.
+readonly ISLAND_KEY="$HOME/Library/Application Support/Jet64 Mk II/island/exchange/sysop.key"
 cd "$(dirname "$0")/.."
+
+# The exchange is set up already, so its sysop key is never made again here:
+# without it, deploy.sh would make a new one and hand the switches to that.
+if [ ! -f sysop.key ]; then
+  echo "No sysop.key here. Copy yours in from your backup and run this again."
+  exit 1
+fi
 
 version="${1:-}"
 if [ -n "$version" ]; then
@@ -62,6 +72,18 @@ if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
 fi
 [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "no token given: nothing was deployed"; exit 1; }
 scripts/deploy.sh
+
+echo "== the workstation's sysop key"
+if [ ! -f "$ISLAND_KEY" ]; then
+  mkdir -p "$(dirname "$ISLAND_KEY")"
+  (umask 077 && cp sysop.key "$ISLAND_KEY")
+  chmod 600 "$ISLAND_KEY"
+  echo "installed, so the workstation shows your switches"
+elif cmp -s sysop.key "$ISLAND_KEY"; then
+  echo "installed before"
+else
+  echo "the workstation already holds a different sysop.key, left as it is: $ISLAND_KEY"
+fi
 
 echo "== live"
 index="$(curl -fsS https://exchange.jet64.com/index)"

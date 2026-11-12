@@ -26,6 +26,12 @@ export const CLOCK_SLACK_SECONDS = 5 * 60;
 export const LABEL_BYTES_MOST = 512 * 1024;
 export const VERDICT_BYTES_MOST = 1 * MIB;
 
+// The most objects R2 deletes in one call, when a cart or a maker comes down.
+export const R2_DELETE_KEYS_MOST = 1000;
+
+// How many hidden disks the sysop's list shows at once, newest first.
+export const HIDDEN_LISTED_MOST = 100;
+
 // How long the catalogue is cached, and how many disks it lists.
 export const INDEX_SECONDS = 60;
 export const INDEX_DISKS_MOST = 500;

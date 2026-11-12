@@ -7,7 +7,7 @@ board for everyone to TAKE.
 
 - **`src/`** — the Worker, the only door (routes listed at the top of
   `src/index.ts`). It never parses a disk.
-- **`schema.sql`** — the D1 catalogue: makers, disks, uploads, reports, takes.
+- **`schema.sql`** — the D1 catalogue: makers, disks, uploads, reports, takes, bans.
   `scripts/catalogue.sh` lays it, and brings a database laid earlier up to it
   with the one-time steps in `migrations/`.
 - **`.github/workflows/check.yml`** — the validator: one job reads the stranger's
@@ -82,16 +82,32 @@ brings the database up to `schema.sql` first (new tables, and each column in
 
 ## Day to day
 
-Nothing per disk. When something is reported (`hidden` lists them):
+Nothing per disk. A disk reported by three keys from three addresses is hidden
+until you look; `hidden` lists them, each as the catalogue would with its
+`reports` and `reason`, and `label` fetches a hidden disk's label for you alone:
 
 ```console
 $ node scripts/exchange.mjs sysop sysop.key hidden
-$ node scripts/exchange.mjs sysop sysop.key unhide <id>     # it was fine
-$ node scripts/exchange.mjs sysop sysop.key yank <id>       # it was not
+$ node scripts/exchange.mjs label <id> label.png sysop.key  # what it shows
+$ node scripts/exchange.mjs sysop sysop.key keep <id>       # it was fine: live again, its reports forgotten
+$ node scripts/exchange.mjs sysop sysop.key remove <id>     # it was not: the whole cart comes down
+$ node scripts/exchange.mjs sysop sysop.key ban <maker>     # the key revoked, every disk down, its addresses barred
+$ node scripts/exchange.mjs sysop sysop.key unban <maker>   # it may publish again; its disks stay down
 $ node scripts/exchange.mjs sysop sysop.key pause           # stop every upload
 $ node scripts/exchange.mjs sysop sysop.key vouch <maker>   # the ✓ beside a name
 $ node scripts/exchange.mjs sysop sysop.key zero <maker> <cart>   # its takes begin again at 0
 ```
+
+`remove` takes down every version of the cart, because the catalogue shows a
+cart's newest live version and taking one alone would bring the one before it
+back; a disk still being checked comes down alone. A maker may do the same with
+their own: `node scripts/exchange.mjs remove <their key> <id>`. The older names
+`yank` and `unhide` still work, as `remove` and `keep`.
+
+`scripts/live.sh` also copies `sysop.key` to where the workstation reads it,
+`~/Library/Application Support/Jet64 Mk II/island/exchange/sysop.key`, so the
+island shows these switches. It never makes a new key: without `sysop.key` in
+this folder it stops and asks for yours.
 
 Without Node on the Mac, run any of these as
 `docker run --rm -v "$PWD":/x -w /x node:22-bookworm node scripts/exchange.mjs ...`.

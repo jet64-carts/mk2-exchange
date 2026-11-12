@@ -17,14 +17,14 @@ CREATE TABLE IF NOT EXISTS makers (
   vouched  INTEGER NOT NULL DEFAULT 0  -- 1: David's mark beside the name
 );
 
--- A disk: one upload, from quarantine to live (or failed, hidden, yanked).
+-- A disk: one upload, from quarantine to live (or failed, hidden, yanked, removed).
 CREATE TABLE IF NOT EXISTS disks (
   id       TEXT PRIMARY KEY,           -- random, hex
   maker    TEXT NOT NULL,
   sha256   TEXT NOT NULL,              -- of the disk file, as the maker signed it
   bytes    INTEGER NOT NULL,
-  state    TEXT NOT NULL,              -- checking | live | failed | hidden | yanked
-  reason   TEXT,                       -- why it failed, or who hid it
+  state    TEXT NOT NULL,              -- checking | live | failed | hidden | yanked | removed
+  reason   TEXT,                       -- why it failed, or who hid or removed it
   name     TEXT,                       -- the cart's name, from its head, once checked
   title    TEXT,
   kind     TEXT,                       -- game | theme | tool
@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS uploads (
   bytes    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS uploads_by_day ON uploads (day);
+CREATE INDEX IF NOT EXISTS uploads_by_key ON uploads (key);   -- the addresses a banned maker published from
+
+-- The addresses David has banned with a maker: none may publish again until he
+-- lifts the maker's ban (migrations/0002).
+CREATE TABLE IF NOT EXISTS bans (
+  ip       TEXT PRIMARY KEY,           -- salted hash of the address, never the address
+  maker    TEXT NOT NULL,              -- the maker banned, whose uploads came from it
+  created  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS bans_by_maker ON bans (maker);
 
 -- One report a key a disk (§9).
 CREATE TABLE IF NOT EXISTS reports (

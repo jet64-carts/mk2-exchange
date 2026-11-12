@@ -78,6 +78,11 @@ bash scripts/catalogue.sh --local >> "$OUT/schema.log" 2>&1
 bash scripts/catalogue.sh --local >> "$OUT/schema.log" 2>&1
 check "a catalogue laid before a disk had a sentence gains the column, once" \
   test "$(d1 "SELECT COUNT(*) AS n FROM pragma_table_info('disks') WHERE name = 'about'" | jq .n)" = 1
+# So too one laid before a maker could be banned.
+d1 "DROP TABLE bans" > /dev/null
+bash scripts/catalogue.sh --local >> "$OUT/schema.log" 2>&1
+check "a catalogue laid before bans gains the table" \
+  test "$(d1 "SELECT COUNT(*) AS n FROM sqlite_master WHERE name IN ('bans', 'bans_by_maker')" | jq .n)" = 2
 # What an earlier day counted, for today's first take to sweep away.
 d1 "INSERT INTO taken (day, maker, name, ip) VALUES ('$LONG_AGO', 'ace', 'old', 'old')" > /dev/null
 d1 "INSERT INTO take_days (day, counted) VALUES ('$LONG_AGO', 1)" > /dev/null
@@ -172,15 +177,20 @@ check "a yanked disk's state says so" test "$(curl -fsS "$EXCHANGE/disks/$id" | 
 # a new version. Prints the Worker's answer to the verdict.
 checked=$(jq -c '.disks[0] | {name, title, kind, machine}' <<<"$index")
 base64 -w0 "$OUT/label.png" > "$OUT/label.b64"
-version() { # n, what the check adds
-  local disk="$OUT/v$1.disk.png" upload
-  { cat /v/small.disk.png; echo "$1"; } > "$disk"
-  upload=$(field "$(client publish "$OUT/maker.key" "ace" "$disk")" .id)
-  jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --argjson more "$2" \
+new_disk() { # n: a disk of new bytes; prints where it is
+  { cat /v/small.disk.png; echo "$1"; } > "$OUT/v$1.disk.png"
+  echo "$OUT/v$1.disk.png"
+}
+version_by() { # key, maker, n, what the check adds
+  local disk upload
+  disk=$(new_disk "$3")
+  upload=$(field "$(client publish "$OUT/$1.key" "$2" "$disk")" .id)
+  jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --argjson more "$4" \
     --rawfile picture "$OUT/label.b64" '{"ok": true, "sha256": $sha256, "check": ($check + $more), "label": $picture}' \
     > "$OUT/verdict.json"
   VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$upload"
 }
+version() { version_by maker ace "$@"; } # n, what the check adds
 sentence_of() { jq -cn --argjson length "$1" '{about: ("x" * $length)}'; }
 state_of() { field "$1" '"\(.state) \(.version // .reason)"'; }
 refused="failed what a disk says about itself is one line of at most $ABOUT_CHARACTERS_MOST characters"
@@ -218,6 +228,95 @@ d1 "UPDATE take_days SET counted = $PAST_ANY_CAP" > /dev/null
 take_from "$FURTHEST" "$newest"
 sleep "$SETTLE_SECONDS"
 check "past the day's cap a disk is given and its take not counted" test "$(takes "$cart")" = 0
+
+# ---- Taking down ---------------------------------------------------------------------------
+# Every upload here is from this one computer, and a key publishes ten a day:
+# the carts below are other makers', cee's and bee's.
+standing_of() { curl -fsS "$EXCHANGE/disks/$1" | jq -r '"\(.disk.state) \(.disk.reason)"'; }
+listed_as() { fresh_index | jq --arg field "$1" --arg is "$2" '[.disks[] | select(.[$field] == $is)] | length'; }
+code_of() { curl -s -o /dev/null -w '%{http_code}' "$EXCHANGE$1"; }
+# A body signed by the sysop's key and sent as it is, as no client would send it.
+raw_sysop() {
+  node --input-type=module -e '
+    import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+    import { readFileSync } from "node:fs";
+    const [keyPath, body] = process.argv.slice(1);
+    const key = createPrivateKey(readFileSync(keyPath));
+    const spki = createPublicKey(key).export({ type: "spki", format: "der" });
+    const time = String(Math.floor(Date.now() / 1000));
+    const hash = createHash("sha256").update(body).digest("hex");
+    const signature = sign(null, Buffer.from(["jet64-exchange-1", "POST", "/sysop", time, hash].join("\n")), key);
+    const response = await fetch(process.env.EXCHANGE + "/sysop", { method: "POST", body, headers: {
+      "x-jet-key": Buffer.from(spki.subarray(spki.length - 32)).toString("base64url"), "x-jet-time": time,
+      "x-jet-sha256": hash, "x-jet-signature": signature.toString("base64url") } });
+    console.log(response.status, await response.text());' "$OUT/sysop.key" "$1"
+}
+
+said=$(client remove "$OUT/other.key" "$newest")
+check "a stranger may not remove a maker's cart" has "$said" not_yours
+said=$(client remove "$OUT/maker.key" "$second")
+check "a maker removes their whole cart, every live version, by any one of them" test "$(field "$said" .removed)" = 3
+check "no older version of a removed cart comes back to the catalogue" test "$(listed_as name "$cart")" = 0
+check "a removed disk's standing says its maker removed it" test "$(standing_of "$newest")" = "removed removed by its maker"
+check "a removed disk's label is gone" test "$(code_of "/label/$second")" = 404
+said=$(client remove "$OUT/maker.key" "$newest")
+check "a cart removed already is not found" has "$said" not_found
+
+two=$(field "$(version_by third cee 9 '{"name": "two"}')" .id)
+version_by third cee 10 '{"name": "two"}' > /dev/null
+said=$(client sysop "$OUT/sysop.key" remove "$two")
+check "the sysop removes a whole cart, by its older version" test "$(field "$said" .changed)" = 2
+check "a cart the sysop removed leaves the catalogue" test "$(listed_as name two)" = 0
+check "its standing says the exchange removed it" test "$(standing_of "$two")" = "yanked removed by the exchange"
+
+# ---- Hidden, and kept ----------------------------------------------------------------------
+# Two reports from other computers, as the database keeps them, and a third sent.
+held=$(field "$(version_by third cee 11 '{"name": "three"}')" .id)
+for n in 1 2; do d1 "INSERT INTO reports (id, key, ip, created) VALUES ('$held', 'key$n', 'ip$n', 0)" > /dev/null; done
+said=$(client report "$OUT/maker.key" "$held")
+check "reports from three keys and three addresses hide a disk" test "$(field "$said" .hidden)" = true
+listed=$(client sysop "$OUT/sysop.key" hidden)
+check "the hidden list gives a disk as the catalogue does, with its reports and why" \
+  test "$(jq -c '.hidden[0] | keys' <<<"$listed")" \
+    = '["about","bytes","checked","id","kind","machine","maker","name","reason","reports","sha256","takes","title","version","vouched"]'
+check "the hidden list names the disk, vouched as a yes or no, and its reports" \
+  test "$(jq -r '.hidden[0] | "\(.id) \(.vouched) \(.reports)"' <<<"$listed")" = "$held false 3"
+said=$(client label "$held" "$OUT/hidden.png" "$OUT/sysop.key")
+check "the sysop is shown a hidden disk's label, and it is never cached" has "$said" "cache-control: no-store"
+check "the hidden label is a PNG" test "$(head -c 4 "$OUT/hidden.png" | od -An -c | tr -d ' ')" = "211PNG"
+check "a hidden disk's label is not shown unsigned" test "$(code_of "/label/$held")" = 404
+said=$(client label "$held" "$OUT/other.png" "$OUT/other.key")
+check "nor to another key" has "$said" not_found
+said=$(client sysop "$OUT/sysop.key" keep "$held")
+check "the sysop keeps a hidden disk" test "$(field "$said" .changed)" = 1
+check "a kept disk is live again" test "$(standing_of "$held")" = "live null"
+check "a kept disk's reports are forgotten" \
+  test "$(d1 "SELECT COUNT(*) + (SELECT reports FROM disks WHERE id = '$held') AS n FROM reports WHERE id = '$held'" | jq .n)" = 0
+said=$(client report "$OUT/maker.key" "$held")
+check "one new report does not hide a kept disk again" test "$(field "$said" .hidden)" = false
+
+# ---- A ban ---------------------------------------------------------------------------------
+buzz=$(field "$(version_by other bee 12 '{"name": "buzz"}')" .id)
+waiting=$(field "$(client publish "$OUT/other.key" bee "$(new_disk 13)")" .id)
+said=$(client sysop "$OUT/sysop.key" ban bee)
+check "a ban revokes the key, takes down every disk and bars the address it published from" \
+  test "$(field "$said" '"\(.changed) \(.disks) \(.addresses)"')" = "1 2 1"
+check "a banned maker's disks leave the catalogue" test "$(listed_as maker bee)" = 0
+check "a banned maker's disk being checked comes down too" test "$(standing_of "$waiting")" = "yanked removed by the exchange"
+said=$(client publish "$OUT/maker.key" ace "$(new_disk 14)")
+check "nobody publishes from a banned address" has "$said" banned
+said=$(client report "$OUT/other.key" "$held")
+check "a revoked key may not report" has "$said" revoked
+said=$(client sysop "$OUT/sysop.key" unban bee)
+check "the sysop lifts a ban" test "$(field "$said" '"\(.changed) \(.addresses)"')" = "1 1"
+said=$(client publish "$OUT/other.key" bee "$(new_disk 15)")
+check "a maker whose ban is lifted publishes again" test "$(field "$said" .state)" = checking
+check "a maker whose ban is lifted finds their disks still down" test "$(standing_of "$buzz")" = "yanked removed by the exchange"
+
+said=$(raw_sysop "not json")
+check "a switch that is not JSON is refused, not a fault" has "$said" "400 .*bad_action"
+said=$(raw_sysop "null")
+check "a switch that is not an object is refused" has "$said" "400 .*bad_action"
 
 echo "e2e: $checks checks, $failed failed"
 [ "$failed" -eq 0 ]

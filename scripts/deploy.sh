@@ -32,6 +32,9 @@ in_node npm ci --silent --no-audit --no-fund
 
 echo "== the sysop key"
 if [ ! -f sysop.key ]; then
+  # Made once only: a key named in wrangler.toml already is David's, kept elsewhere.
+  grep -q '^SYSOP_KEY = ""' wrangler.toml ||
+    { echo "No sysop.key here, and wrangler.toml names one. Copy yours in from your backup and run this again."; exit 1; }
   public=$(in_node node scripts/exchange.mjs key sysop.key)
   sed -i '' "s|^SYSOP_KEY = \".*\"|SYSOP_KEY = \"$public\"|" wrangler.toml
   echo "made sysop.key: copy it somewhere safe now"

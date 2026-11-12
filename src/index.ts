@@ -8,19 +8,20 @@
 //
 //   GET  /index                  the catalogue, cached
 //   GET  /disk/<id>              a live disk's file; counts a take for its cart
-//   GET  /label/<id>             a live disk's label
+//   GET  /label/<id>             a live disk's label; a hidden one's too, signed by David's key
 //   GET  /disks/<id>             where an upload stands: checking, live, failed...
 //   POST /disks?maker=<name>     publish (signed; the body is the disk file)
+//   POST /remove/<id>            take down a cart, every version (signed by its maker's key)
 //   POST /report/<id>            report a disk (signed)
 //   POST /sysop                  David's switches (signed by his key)
 //   GET  /quarantine/<id>        a disk being checked, for the validator only
 //   POST /verdict/<id>           the validator's verdict (bearer token)
 
 import {
-  ABOUT_CHARACTERS_MOST, ADDRESS_UPLOADS_A_DAY, DISK_BYTES_MOST, FILE_SECONDS, INDEX_DISKS_MOST, INDEX_SECONDS,
-  KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST, NAME_PATTERN, NEW_MAKER_DISK_BYTES_MOST, NEW_MAKER_SECONDS, REPORTS_THAT_HIDE,
-  RESERVED_FOLDS, TAKES_COUNTED_A_DAY, TITLE_CHARACTERS_MOST, UPLOAD_BYTES_A_DAY, UPLOADS_A_DAY, VERDICT_BYTES_MOST,
-  fold, oneLine,
+  ABOUT_CHARACTERS_MOST, ADDRESS_UPLOADS_A_DAY, DISK_BYTES_MOST, FILE_SECONDS, HIDDEN_LISTED_MOST, INDEX_DISKS_MOST,
+  INDEX_SECONDS, KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST, NAME_PATTERN, NEW_MAKER_DISK_BYTES_MOST, NEW_MAKER_SECONDS,
+  R2_DELETE_KEYS_MOST, REPORTS_THAT_HIDE, RESERVED_FOLDS, TAKES_COUNTED_A_DAY, TITLE_CHARACTERS_MOST, UPLOAD_BYTES_A_DAY,
+  UPLOADS_A_DAY, VERDICT_BYTES_MOST, fold, oneLine,
 } from "./rules";
 import { hashAddress, randomId, signedBy } from "./sign";
 
@@ -38,6 +39,18 @@ type Json = Record<string, unknown>;
 
 const KINDS = new Set(["game", "theme", "tool"]);
 const INDEX_CACHE_KEY = "https://exchange.internal/index";
+
+// Why a disk came down, as its standing says: its maker took it, or David did.
+const REMOVED_BY_MAKER = "removed by its maker";
+const REMOVED_BY_EXCHANGE = "removed by the exchange";
+
+// What /index lists of a disk, read from `disks d`, `makers m` and `takes t`;
+// the sysop's list of hidden disks reads the same.
+const LISTED_COLUMNS =
+  `d.id, d.maker, d.name, d.title, d.about, d.kind, d.machine, d.bytes, d.sha256, d.version, d.checked,
+   m.vouched, COALESCE(t.takes, 0) AS takes`;
+const LISTED_FROM =
+  `disks d JOIN makers m ON m.name = d.maker LEFT JOIN takes t ON t.maker = d.maker AND t.name = d.name`;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -59,10 +72,11 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
 
   if (get && url.pathname === "/index") return index(request, env, ctx);
   if (get && head === "disk" && id) return take(request, env, ctx, id);
-  if (get && head === "label" && id) return file(request, env, ctx, `labels/${id}`, id, "image/png");
+  if (get && head === "label" && id) return label(request, env, ctx, url, id);
   if (get && head === "disks" && id) return standing(env, id);
   if (get && head === "quarantine" && id) return quarantine(env, id);
   if (post && url.pathname === "/disks") return publish(request, env, url);
+  if (post && head === "remove" && id) return remove(request, env, url, id);
   if (post && head === "report" && id) return report(request, env, url, id);
   if (post && url.pathname === "/sysop") return sysop(request, env, url);
   if (post && head === "verdict" && id) return verdict(request, env, ctx, id);
@@ -104,16 +118,14 @@ async function index(request: Request, env: Env, ctx: ExecutionContext): Promise
   // The newest live upload of each maker's cart, newest first, with the takes
   // of every version of that cart together.
   const { results } = await env.DB.prepare(
-    `SELECT d.id, d.maker, d.name, d.title, d.about, d.kind, d.machine, d.bytes, d.sha256, d.version, d.checked,
-            m.vouched, COALESCE(t.takes, 0) AS takes
-       FROM disks d JOIN makers m ON m.name = d.maker
-       LEFT JOIN takes t ON t.maker = d.maker AND t.name = d.name
+    `SELECT ${LISTED_COLUMNS}
+       FROM ${LISTED_FROM}
       WHERE d.state = 'live'
         AND d.version = (SELECT MAX(version) FROM disks e
                           WHERE e.maker = d.maker AND e.name = d.name AND e.state = 'live')
       ORDER BY d.checked DESC LIMIT ?`,
   ).bind(INDEX_DISKS_MOST).all();
-  const disks = results.map((row) => ({ ...row, vouched: row.vouched === 1 }));
+  const disks = results.map(listed);
   const response = answer({ disks }, 200, { "cache-control": `public, max-age=${INDEX_SECONDS}` });
   ctx.waitUntil(cache.put(key, response.clone()));
   return response;
@@ -136,6 +148,32 @@ async function file(request: Request, env: Env, ctx: ExecutionContext, key: stri
   });
   ctx.waitUntil(cache.put(request, response.clone()));
   return response;
+}
+
+// A disk as the catalogue lists it: its maker's vouch a yes or no.
+function listed(row: Record<string, unknown>): Json {
+  return { ...row, vouched: row.vouched === 1 };
+}
+
+// A disk's label. A hidden disk's is shown to David alone, to judge it by: his
+// request is signed as any other, with the empty body's hash, and what he is
+// shown is never cached, so nobody after him meets it. Anyone else, and a
+// signature that does not hold, is answered as for any label.
+async function label(request: Request, env: Env, ctx: ExecutionContext, url: URL, id: string): Promise<Response> {
+  if (request.headers.has("x-jet-signature")) {
+    const signed = await signedBy(request, url, "");
+    if (signed.ok && signed.key === env.SYSOP_KEY) {
+      const row = await env.DB.prepare("SELECT state, sha256 FROM disks WHERE id = ?").bind(id)
+        .first<{ state: string; sha256: string }>();
+      const object = row && (row.state === "live" || row.state === "hidden") ? await env.DISKS.get(`labels/${id}`) : null;
+      if (!row || !object) return refuse(404, "not_found", "no such disk is on the exchange");
+      return new Response(object.body, {
+        headers: { "content-type": "image/png", "cache-control": "no-store", "x-jet-sha256": row.sha256,
+                   "content-length": String(object.size) },
+      });
+    }
+  }
+  return file(request, env, ctx, `labels/${id}`, id, "image/png");
 }
 
 // A live disk's file, and a take counted for its cart: after the answer is on
@@ -199,6 +237,24 @@ async function publish(request: Request, env: Env, url: URL): Promise<Response> 
   if (size > DISK_BYTES_MOST) return refuse(413, "too_large", `a disk may be at most ${DISK_BYTES_MOST} bytes`);
   if (!/^[0-9a-f]{64}$/.test(signed.sha256)) return refuse(400, "no_hash", "sign the disk's SHA-256");
 
+  // The day's counts, and whether David has banned this address, in one look,
+  // before a name is claimed: a banned computer claims none.
+  const day = today();
+  const ip = await hashAddress(request, env.IP_SALT ?? "");
+  const counts = await env.DB.prepare(
+    `SELECT COUNT(*) AS all_uploads, COALESCE(SUM(bytes), 0) AS all_bytes,
+            SUM(key = ?1) AS by_key, SUM(ip = ?2) AS by_ip,
+            EXISTS (SELECT 1 FROM bans WHERE ip = ?2) AS banned
+       FROM uploads WHERE day = ?3`,
+  ).bind(signed.key, ip, day)
+    .first<{ all_uploads: number; all_bytes: number; by_key: number; by_ip: number; banned: number }>();
+  if (counts?.banned) return refuse(403, "banned", "this computer may no longer publish");
+  if ((counts?.by_key ?? 0) >= KEY_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
+  if ((counts?.by_ip ?? 0) >= ADDRESS_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
+  if ((counts?.all_uploads ?? 0) >= UPLOADS_A_DAY || (counts?.all_bytes ?? 0) + size > UPLOAD_BYTES_A_DAY) {
+    return refuse(503, "full", "the exchange has taken all it can today; please try again tomorrow");
+  }
+
   const claimed = await claim(env, maker, signed);
   if (claimed instanceof Response) return claimed;
   if (claimed.revoked) return refuse(403, "revoked", "this key may no longer publish");
@@ -207,18 +263,6 @@ async function publish(request: Request, env: Env, url: URL): Promise<Response> 
     return refuse(413, "too_large", `in a maker's first week a disk may be at most ${NEW_MAKER_DISK_BYTES_MOST} bytes`);
   }
 
-  const day = today();
-  const ip = await hashAddress(request, env.IP_SALT ?? "");
-  const counts = await env.DB.prepare(
-    `SELECT COUNT(*) AS all_uploads, COALESCE(SUM(bytes), 0) AS all_bytes,
-            SUM(key = ?) AS by_key, SUM(ip = ?) AS by_ip
-       FROM uploads WHERE day = ?`,
-  ).bind(signed.key, ip, day).first<{ all_uploads: number; all_bytes: number; by_key: number; by_ip: number }>();
-  if ((counts?.by_key ?? 0) >= KEY_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
-  if ((counts?.by_ip ?? 0) >= ADDRESS_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
-  if ((counts?.all_uploads ?? 0) >= UPLOADS_A_DAY || (counts?.all_bytes ?? 0) + size > UPLOAD_BYTES_A_DAY) {
-    return refuse(503, "full", "the exchange has taken all it can today; please try again tomorrow");
-  }
   const same = await env.DB.prepare(
     "SELECT id, state FROM disks WHERE sha256 = ? AND state IN ('checking', 'live', 'hidden')",
   ).bind(signed.sha256).first<{ id: string; state: string }>();
@@ -280,6 +324,51 @@ async function startValidator(env: Env, id: string): Promise<void> {
     },
   );
   if (!response.ok) console.error(`the validator would not start for ${id}: ${response.status}`);
+}
+
+// ---- Taking down ----------------------------------------------------------------------------
+
+// A maker takes down their own cart. The catalogue lists each cart's newest
+// live version, so taking down one version alone would bring the one before it
+// back: the whole cart comes down, every version, and a disk still being
+// checked (which has no cart's name yet) comes down alone.
+async function remove(request: Request, env: Env, url: URL, id: string): Promise<Response> {
+  const signed = await signedBy(request, url, "");
+  if (!signed.ok) return refuse(401, "unsigned", signed.why);
+  const row = await env.DB.prepare(
+    `SELECT d.maker, d.name, m.key FROM disks d JOIN makers m ON m.name = d.maker
+      WHERE d.id = ? AND d.state IN ('checking', 'live', 'hidden')`,
+  ).bind(id).first<{ maker: string; name: string | null; key: string }>();
+  if (!row) return refuse(404, "not_found", "no such disk is on the exchange");
+  if (row.key !== signed.key) return refuse(403, "not_yours", "only its maker may remove it");
+  const removed = await takeDownCart(env, id, "removed", REMOVED_BY_MAKER);
+  return answer({ id, removed });
+}
+
+// Takes down the cart disk `id` is a version of, as `takeDown` does; for a
+// disk not yet checked, that disk alone. How many disks came down.
+async function takeDownCart(env: Env, id: string, state: string, reason: string): Promise<number> {
+  return takeDown(env, state, reason,
+                  "id = ?3 OR (name IS NOT NULL AND (maker, name) = (SELECT maker, name FROM disks WHERE id = ?3))", id);
+}
+
+// Every disk that `where` picks and is not down already is put in `state`, for
+// `reason`; its file and label leave R2, and the catalogue's cache is dropped.
+// `where` numbers what it is given from ?3, after the state and the reason. A
+// disk's file and label cached nearby still leave within the hour, as `file`
+// says. How many disks came down.
+async function takeDown(env: Env, state: string, reason: string, where: string, ...values: unknown[]): Promise<number> {
+  const { results } = await env.DB.prepare(
+    `UPDATE disks SET state = ?1, reason = ?2
+      WHERE state IN ('checking', 'live', 'hidden') AND (${where})
+     RETURNING id`,
+  ).bind(state, reason, ...values).all<{ id: string }>();
+  const objects = results.flatMap(({ id }) => [`disks/${id}`, `labels/${id}`]);
+  for (let at = 0; at < objects.length; at += R2_DELETE_KEYS_MOST) {
+    await env.DISKS.delete(objects.slice(at, at + R2_DELETE_KEYS_MOST));
+  }
+  if (results.length > 0) await caches.default.delete(new Request(INDEX_CACHE_KEY));
+  return results.length;
 }
 
 // ---- The validator --------------------------------------------------------------------------
@@ -362,6 +451,8 @@ function sentence(given: unknown): string | null {
 async function report(request: Request, env: Env, url: URL, id: string): Promise<Response> {
   const signed = await signedBy(request, url, "");
   if (!signed.ok) return refuse(401, "unsigned", signed.why);
+  const revoked = await env.DB.prepare("SELECT 1 FROM makers WHERE key = ? AND revoked = 1").bind(signed.key).first();
+  if (revoked) return refuse(403, "revoked", "this key may no longer report");
   const row = await env.DB.prepare("SELECT state FROM disks WHERE id = ?").bind(id).first<{ state: string }>();
   if (!row || row.state !== "live") return refuse(404, "not_found", "no such disk is on the exchange");
   const ip = await hashAddress(request, env.IP_SALT ?? "");
@@ -381,36 +472,76 @@ async function report(request: Request, env: Env, url: URL, id: string): Promise
   return answer({ id, reported: true, hidden: hide });
 }
 
+type Asked = { action?: unknown; id?: unknown; maker?: unknown; key?: unknown; name?: unknown };
+
 async function sysop(request: Request, env: Env, url: URL): Promise<Response> {
   const text = await request.text();
   const signed = await signedBy(request, url, text);
   if (!signed.ok) return refuse(401, "unsigned", signed.why);
   if (signed.key !== env.SYSOP_KEY) return refuse(403, "not_sysop", "only the sysop may do that");
-  const asked = JSON.parse(text) as { action?: string; id?: string; maker?: string; key?: string; name?: string };
+  let asked: Asked;
+  try {
+    asked = JSON.parse(text);
+  } catch {
+    return refuse(400, "bad_action", "a switch is asked for in JSON");
+  }
+  if (typeof asked !== "object" || asked === null) return refuse(400, "bad_action", "no such switch");
+  // What a switch names, as words: D1 takes no undefined, and a switch that
+  // names nothing then changes nothing.
+  const said = (value: unknown) => (typeof value === "string" ? value : "");
+  const id = said(asked.id), maker = said(asked.maker);
   const db = env.DB;
   const one = async (sql: string, ...values: unknown[]) => (await db.prepare(sql).bind(...values).run()).meta.changes;
   let changed = 0;
   switch (asked.action) {
     case "pause": changed = await one("INSERT OR REPLACE INTO settings (k, v) VALUES ('paused', '1')"); break;
     case "resume": changed = await one("INSERT OR REPLACE INTO settings (k, v) VALUES ('paused', '0')"); break;
-    case "yank":
-      changed = await one("UPDATE disks SET state = 'yanked', reason = 'yanked by David' WHERE id = ?", asked.id);
-      await env.DISKS.delete([`disks/${asked.id}`, `labels/${asked.id}`]);
+    // The whole cart the disk is a version of, as its maker would take it down
+    // (`remove`); `yank` is the switch's older name, and once took one version only.
+    case "remove": case "yank": changed = await takeDownCart(env, id, "yanked", REMOVED_BY_EXCHANGE); break;
+    case "hide": changed = await one("UPDATE disks SET state = 'hidden', reason = 'hidden by David' WHERE id = ?", id); break;
+    // A hidden disk was fine: it is live again, and the reports that hid it are
+    // forgotten, so one more does not hide it again at once. `unhide` is the
+    // switch's older name.
+    case "keep": case "unhide": {
+      changed = await one("UPDATE disks SET state = 'live', reason = NULL, reports = 0 WHERE id = ? AND state = 'hidden'", id);
+      if (changed > 0) await one("DELETE FROM reports WHERE id = ?", id);
       break;
-    case "hide": changed = await one("UPDATE disks SET state = 'hidden', reason = 'hidden by David' WHERE id = ?", asked.id); break;
-    case "unhide": changed = await one("UPDATE disks SET state = 'live', reason = NULL WHERE id = ? AND state = 'hidden'", asked.id); break;
-    case "vouch": changed = await one("UPDATE makers SET vouched = 1 WHERE name = ?", asked.maker); break;
-    case "unvouch": changed = await one("UPDATE makers SET vouched = 0 WHERE name = ?", asked.maker); break;
-    case "revoke": changed = await one("UPDATE makers SET revoked = 1 WHERE name = ?", asked.maker); break;
+    }
+    case "vouch": changed = await one("UPDATE makers SET vouched = 1 WHERE name = ?", maker); break;
+    case "unvouch": changed = await one("UPDATE makers SET vouched = 0 WHERE name = ?", maker); break;
+    case "revoke": changed = await one("UPDATE makers SET revoked = 1 WHERE name = ?", maker); break;
+    // A maker who will not do: their key revoked, every disk of theirs taken
+    // down, and every address they published from kept from publishing again.
+    case "ban": {
+      changed = await one("UPDATE makers SET revoked = 1 WHERE name = ?", maker);
+      const disks = await takeDown(env, "yanked", REMOVED_BY_EXCHANGE, "maker = ?3", maker);
+      const addresses = await one(
+        `INSERT OR IGNORE INTO bans (ip, maker, created)
+         SELECT DISTINCT u.ip, m.name, ? FROM uploads u JOIN makers m ON m.key = u.key WHERE m.name = ?`,
+        now(), maker,
+      );
+      return answer({ action: asked.action, changed, disks, addresses });
+    }
+    // The key and the addresses may publish again; the disks taken down stay down.
+    case "unban": {
+      changed = await one("UPDATE makers SET revoked = 0 WHERE name = ?", maker);
+      const addresses = await one("DELETE FROM bans WHERE maker = ?", maker);
+      return answer({ action: asked.action, changed, addresses });
+    }
     // A maker who lost their key, or whose key was copied: the name moves to a new one.
-    case "rekey": changed = await one("UPDATE makers SET key = ?, revoked = 0 WHERE name = ?", asked.key, asked.maker); break;
+    case "rekey": changed = await one("UPDATE makers SET key = ?, revoked = 0 WHERE name = ?", said(asked.key), maker); break;
     // A cart's takes begin again at none; who took it today stays, so they are not counted twice.
-    case "zero": changed = await one("DELETE FROM takes WHERE maker = ? AND name = ?", asked.maker, asked.name); break;
+    case "zero": changed = await one("DELETE FROM takes WHERE maker = ? AND name = ?", maker, said(asked.name)); break;
+    // What reports have hidden, for David to keep or remove: each as the
+    // catalogue would list it, with how many reported it and why it is hidden.
     case "hidden": {
       const { results } = await db.prepare(
-        "SELECT id, maker, name, title, reports, reason FROM disks WHERE state = 'hidden' ORDER BY created DESC LIMIT 100",
-      ).all();
-      return answer({ hidden: results });
+        `SELECT ${LISTED_COLUMNS}, d.reports, d.reason
+           FROM ${LISTED_FROM}
+          WHERE d.state = 'hidden' ORDER BY d.created DESC LIMIT ?`,
+      ).bind(HIDDEN_LISTED_MOST).all();
+      return answer({ hidden: results.map(listed) });
     }
     default: return refuse(400, "bad_action", "no such switch");
   }
