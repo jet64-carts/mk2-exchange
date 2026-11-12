@@ -20,8 +20,8 @@ env:
   EXCHANGE: https://exchange.jet64.com
   # mk2disk for Linux x86-64, built by scripts/release-validator.sh from the
   # machine's own disk/ and pinned here by its SHA-256.
-  VALIDATOR_URL: https://github.com/jet64-carts/mk2-exchange/releases/download/validator-0.4.0-2/mk2disk-linux-x86_64
-  VALIDATOR_SHA256: 2d75455208583a03b9a6b34a333b9e00dd3fd9c4241e92f167e4aceb63f08fee
+  VALIDATOR_URL: https://github.com/jet64-carts/mk2-exchange/releases/download/validator-0.4.0-3/mk2disk-linux-x86_64
+  VALIDATOR_SHA256: 6d34695f4d4fb3f59fb0d8c25822058e453b2f63801601d18f7356ee6d41443d
 
 jobs:
   check:
