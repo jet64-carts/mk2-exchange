@@ -11,7 +11,7 @@ workers_dev = false
 routes = [{ pattern = "exchange.jet64.com", custom_domain = true }]
 
 [vars]
-# David's public key (base64url), printed by `node scripts/key.mjs new sysop.key`.
+# David's public key (base64url), printed by `node scripts/exchange.mjs key sysop.key`.
 SYSOP_KEY = "Q6cAXGcaMEEQ3O5L60NYK77DvbqNr1t7zG0tqLGzr8M"
 GITHUB_REPO = "jet64-carts/mk2-exchange"
 
