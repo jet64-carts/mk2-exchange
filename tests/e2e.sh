@@ -87,10 +87,9 @@ trap 'kill $worker 2>/dev/null; rm -f .dev.vars' EXIT
 for _ in $(seq 60); do curl -fsS "$EXCHANGE/" >/dev/null 2>&1 && break; sleep 1; done
 check "the Worker answers" curl -fsS "$EXCHANGE/" -o /dev/null
 
-validate() { # id: both halves of the Action, by hand
-  local verdict
-  verdict=$(scripts/check.sh "$1")
-  VERDICT="$verdict" scripts/report.sh "$1"
+validate() { # id: both halves of the Action, by hand, the verdict passed as a file as the Action passes it
+  scripts/check.sh "$1" > "$OUT/verdict.json"
+  VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$1"
 }
 
 # ---- Names ---------------------------------------------------------------------------------
@@ -177,9 +176,10 @@ version() { # n, what the check adds
   local disk="$OUT/v$1.disk.png" upload
   { cat /v/small.disk.png; echo "$1"; } > "$disk"
   upload=$(field "$(client publish "$OUT/maker.key" "ace" "$disk")" .id)
-  VERDICT=$(jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --argjson more "$2" \
-    --rawfile picture "$OUT/label.b64" '{"ok": true, "sha256": $sha256, "check": ($check + $more), "label": $picture}') \
-    scripts/report.sh "$upload"
+  jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --argjson more "$2" \
+    --rawfile picture "$OUT/label.b64" '{"ok": true, "sha256": $sha256, "check": ($check + $more), "label": $picture}' \
+    > "$OUT/verdict.json"
+  VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$upload"
 }
 sentence_of() { jq -cn --argjson length "$1" '{about: ("x" * $length)}'; }
 state_of() { field "$1" '"\(.state) \(.version // .reason)"'; }

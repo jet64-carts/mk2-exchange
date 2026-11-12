@@ -5,14 +5,20 @@
 # secret, and hands the first half's verdict back to the Worker. A first half
 # that never finished is reported as a failure, so no upload waits forever.
 #
-#   EXCHANGE=... VERDICT_TOKEN=... VERDICT='{"ok":...}' scripts/report.sh <id>
+#   EXCHANGE=... VERDICT_TOKEN=... VERDICT_FILE=verdict.json scripts/report.sh <id>
+#
+# The verdict is read from a file, never the environment: it carries the label
+# as base64, which can pass Linux's 128 KB for one variable.
 set -euo pipefail
 
 id="${1:-}"
 [[ "$id" =~ ^[0-9a-f]{32}$ ]] || { echo "no such upload" >&2; exit 1; }
-verdict="${VERDICT:-}"
-[ -n "$verdict" ] || verdict='{"ok":false,"reason":"the check did not finish"}'
-printf '%s' "$verdict" | curl -fsS --max-time 60 -X POST \
+file="${VERDICT_FILE:-}"
+if [ -z "$file" ] || [ ! -s "$file" ]; then
+  file="$(mktemp)"
+  printf '%s' '{"ok":false,"reason":"the check did not finish"}' > "$file"
+fi
+curl -fsS --max-time 60 -X POST \
   -H "authorization: Bearer $VERDICT_TOKEN" -H "content-type: application/json" \
-  --data-binary @- "$EXCHANGE/verdict/$id"
+  --data-binary @"$file" "$EXCHANGE/verdict/$id"
 echo

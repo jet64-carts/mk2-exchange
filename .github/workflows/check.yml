@@ -5,6 +5,11 @@
 # no permissions and no secrets; the second never touches it and holds the one
 # secret. Every action is pinned by its full commit SHA and the runner by its
 # image, so nothing moves underneath.
+#
+# The verdict passes between them as a file, never a job output: it carries the
+# label as base64, and handed to a step as an environment variable, a label
+# over about 96 KB passed Linux's 128 KB for one variable, so the second job
+# could not start and the upload waited on its verdict for ever.
 name: check
 
 on:
@@ -28,8 +33,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
-    outputs:
-      verdict: ${{ steps.check.outputs.verdict }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,13 +42,17 @@ jobs:
           curl -fsSL --max-time 60 "$VALIDATOR_URL" -o "$RUNNER_TEMP/mk2disk"
           echo "$VALIDATOR_SHA256  $RUNNER_TEMP/mk2disk" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/mk2disk"
-      - id: check
-        name: Check the disk
+      - name: Check the disk
         env:
           ID: ${{ inputs.id }}
-        run: |
-          verdict=$(VALIDATOR="$RUNNER_TEMP/mk2disk" scripts/check.sh "$ID")
-          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        run: VALIDATOR="$RUNNER_TEMP/mk2disk" scripts/check.sh "$ID" > "$RUNNER_TEMP/verdict.json"
+      - name: Keep the verdict for the second job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verdict
+          path: ${{ runner.temp }}/verdict.json
+          retention-days: 1
+          if-no-files-found: error
 
   report:
     needs: check
@@ -57,9 +64,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A first job that never finished left no verdict: report.sh reports that as a failure.
+      - name: Take the verdict
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verdict
+          path: ${{ runner.temp }}/verdict
       - name: Hand back the verdict
         env:
           ID: ${{ inputs.id }}
-          VERDICT: ${{ needs.check.outputs.verdict }}
+          VERDICT_FILE: ${{ runner.temp }}/verdict/verdict.json
           VERDICT_TOKEN: ${{ secrets.VERDICT_TOKEN }}
         run: scripts/report.sh "$ID"
