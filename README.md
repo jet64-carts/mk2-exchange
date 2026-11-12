@@ -73,7 +73,10 @@ Once, on a Mac with Docker and `gh`:
 5. **A budget alert at $1** (Billing → Billable Usage → Create budget alert), so
    any bill at all is an email at once.
 
-To take a change live, run step 4 again. It passes over what is done already,
+To take a change live, run `scripts/live.sh`: it asks for the Cloudflare token
+and runs step 4 again. With a version, `scripts/live.sh 0.4.0-2`, it first
+builds and releases that validator from the machine's checkout, pins it in
+`check.yml`, and commits and pushes the pin. Step 4 passes over what is done already,
 brings the database up to `schema.sql` first (new tables, and each column in
 `migrations/` added once), then deploys the Worker.
 
