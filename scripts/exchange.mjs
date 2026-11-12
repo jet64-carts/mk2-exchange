@@ -11,9 +11,10 @@
 //   node scripts/exchange.mjs state <id>                      where an upload stands
 //   node scripts/exchange.mjs index                           the catalogue
 //   node scripts/exchange.mjs report <file> <id>              report a disk
-//   node scripts/exchange.mjs sysop <file> <action> [id|maker] [new key]
+//   node scripts/exchange.mjs sysop <file> <action> [id|maker] [new key|cart]
 //       pause, resume, yank <id>, hide <id>, unhide <id>, vouch <maker>,
-//       unvouch <maker>, revoke <maker>, rekey <maker> <key>, hidden
+//       unvouch <maker>, revoke <maker>, rekey <maker> <key>, hidden,
+//       zero <maker> <cart> (the cart's takes begin again at 0)
 //
 // EXCHANGE names the exchange; https://exchange.jet64.com when unset.
 
@@ -81,11 +82,12 @@ switch (command) {
   case "index": await say(await fetch(`${EXCHANGE}/index`)); break;
   case "report": await signed(rest[0], "POST", `/report/${rest[1]}`, undefined, sha256(Buffer.alloc(0))); break;
   case "sysop": {
-    const [keyPath, action, target, key] = rest;
+    const [keyPath, action, target, second] = rest;
     const asked = { action };
     if (["yank", "hide", "unhide"].includes(action)) asked.id = target;
-    if (["vouch", "unvouch", "revoke", "rekey"].includes(action)) asked.maker = target;
-    if (action === "rekey") asked.key = key;
+    if (["vouch", "unvouch", "revoke", "rekey", "zero"].includes(action)) asked.maker = target;
+    if (action === "rekey") asked.key = second;
+    if (action === "zero") asked.name = second;
     const body = Buffer.from(JSON.stringify(asked));
     await signed(keyPath, "POST", "/sysop", body);
     break;

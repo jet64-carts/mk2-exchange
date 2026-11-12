@@ -3,7 +3,9 @@
 #
 # Sets the exchange up on Cloudflare and deploys it, from a Mac with Docker and
 # gh, with nothing else installed: wrangler runs in a Node container. Safe to run
-# again; each step that is done already is passed over. The first run:
+# again; each step that is done already is passed over, and a later run brings
+# the database up to schema.sql (scripts/catalogue.sh) and deploys the Worker
+# as it now stands. The first run:
 #
 #   - makes the sysop key, sysop.key, beside this script's repository (keep a copy
 #     somewhere safe: it is the only key that can yank a disk or pause uploads),
@@ -45,7 +47,9 @@ if grep -q "database_id = \"$ZERO_ID\"" wrangler.toml; then
   [ -n "$id" ] || { echo "the database could not be made"; exit 1; }
   sed -i '' "s|database_id = \"$ZERO_ID\"|database_id = \"$id\"|" wrangler.toml
 fi
-wrangler d1 execute jet64-exchange --remote --file schema.sql --yes > /dev/null
+# Before the Worker that reads it: what the catalogue has gained since it was
+# laid is added now, and the Worker in service meanwhile is none the worse.
+in_node bash scripts/catalogue.sh --remote
 
 echo "== the secrets"
 if [ ! -f .secrets-set ]; then

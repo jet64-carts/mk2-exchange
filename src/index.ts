@@ -7,7 +7,7 @@
 // which refuses past its own limits rather than billing.
 //
 //   GET  /index                  the catalogue, cached
-//   GET  /disk/<id>              a live disk's file
+//   GET  /disk/<id>              a live disk's file; counts a take for its cart
 //   GET  /label/<id>             a live disk's label
 //   GET  /disks/<id>             where an upload stands: checking, live, failed...
 //   POST /disks?maker=<name>     publish (signed; the body is the disk file)
@@ -17,9 +17,10 @@
 //   POST /verdict/<id>           the validator's verdict (bearer token)
 
 import {
-  ADDRESS_UPLOADS_A_DAY, DISK_BYTES_MOST, INDEX_DISKS_MOST, INDEX_SECONDS, KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST,
-  NAME_PATTERN, NEW_MAKER_DISK_BYTES_MOST, NEW_MAKER_SECONDS, REPORTS_THAT_HIDE, RESERVED_FOLDS, UPLOAD_BYTES_A_DAY,
-  UPLOADS_A_DAY, VERDICT_BYTES_MOST, fold,
+  ABOUT_CHARACTERS_MOST, ADDRESS_UPLOADS_A_DAY, DISK_BYTES_MOST, FILE_SECONDS, INDEX_DISKS_MOST, INDEX_SECONDS,
+  KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST, NAME_PATTERN, NEW_MAKER_DISK_BYTES_MOST, NEW_MAKER_SECONDS, REPORTS_THAT_HIDE,
+  RESERVED_FOLDS, TAKES_COUNTED_A_DAY, TITLE_CHARACTERS_MOST, UPLOAD_BYTES_A_DAY, UPLOADS_A_DAY, VERDICT_BYTES_MOST,
+  fold, oneLine,
 } from "./rules";
 import { hashAddress, randomId, signedBy } from "./sign";
 
@@ -57,7 +58,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
   const post = request.method === "POST";
 
   if (get && url.pathname === "/index") return index(request, env, ctx);
-  if (get && head === "disk" && id) return file(request, env, ctx, `disks/${id}`, id, "application/octet-stream");
+  if (get && head === "disk" && id) return take(request, env, ctx, id);
   if (get && head === "label" && id) return file(request, env, ctx, `labels/${id}`, id, "image/png");
   if (get && head === "disks" && id) return standing(env, id);
   if (get && head === "quarantine" && id) return quarantine(env, id);
@@ -100,11 +101,13 @@ async function index(request: Request, env: Env, ctx: ExecutionContext): Promise
   const key = new Request(INDEX_CACHE_KEY);
   const cached = await cache.match(key);
   if (cached) return cached;
-  // The newest live upload of each maker's cart, newest first.
+  // The newest live upload of each maker's cart, newest first, with the takes
+  // of every version of that cart together.
   const { results } = await env.DB.prepare(
-    `SELECT d.id, d.maker, d.name, d.title, d.kind, d.machine, d.bytes, d.sha256, d.version, d.checked,
-            m.vouched
+    `SELECT d.id, d.maker, d.name, d.title, d.about, d.kind, d.machine, d.bytes, d.sha256, d.version, d.checked,
+            m.vouched, COALESCE(t.takes, 0) AS takes
        FROM disks d JOIN makers m ON m.name = d.maker
+       LEFT JOIN takes t ON t.maker = d.maker AND t.name = d.name
       WHERE d.state = 'live'
         AND d.version = (SELECT MAX(version) FROM disks e
                           WHERE e.maker = d.maker AND e.name = d.name AND e.state = 'live')
@@ -128,11 +131,52 @@ async function file(request: Request, env: Env, ctx: ExecutionContext, key: stri
   if (!object) return refuse(404, "not_found", "no such disk is on the exchange");
   // A yanked disk leaves the cache within an hour; the catalogue stops listing it at once.
   const response = new Response(object.body, {
-    headers: { "content-type": type, "cache-control": "public, max-age=3600", "x-jet-sha256": row.sha256,
+    headers: { "content-type": type, "cache-control": `public, max-age=${FILE_SECONDS}`, "x-jet-sha256": row.sha256,
                "content-length": String(object.size) },
   });
   ctx.waitUntil(cache.put(request, response.clone()));
   return response;
+}
+
+// A live disk's file, and a take counted for its cart: after the answer is on
+// its way, so nobody waits on the count.
+async function take(request: Request, env: Env, ctx: ExecutionContext, id: string): Promise<Response> {
+  const response = await file(request, env, ctx, `disks/${id}`, id, "application/octet-stream");
+  if (response.ok && request.method === "GET") ctx.waitUntil(countTake(request, env, id));
+  return response;
+}
+
+// One take for the cart a disk is a version of: at most one a cart, a computer
+// and a UTC day, a computer being its address's salted hash, and none past the
+// day's cap. The first statement is the whole test: it writes who took only
+// when the disk is live, the day has room and this computer has not taken this
+// cart today, so a take that does not count costs D1 a few rows read and none
+// written. One that counts also sweeps away what earlier days kept: those rows
+// are keyed by day first, so the sweep reads only what it deletes, and the cap
+// bounds what one day can leave to delete. Should the second step be lost, a
+// take goes uncounted; none is ever counted twice.
+async function countTake(request: Request, env: Env, id: string): Promise<void> {
+  const day = today();
+  const ip = await hashAddress(request, env.IP_SALT ?? "");
+  const cart = await env.DB.prepare(
+    `INSERT OR IGNORE INTO taken (day, maker, name, ip)
+     SELECT ?1, maker, name, ?2 FROM disks
+      WHERE id = ?3 AND state = 'live'
+        AND COALESCE((SELECT counted FROM take_days WHERE day = ?1), 0) < ?4
+     RETURNING maker, name`,
+  ).bind(day, ip, id, TAKES_COUNTED_A_DAY).first<{ maker: string; name: string }>();
+  if (!cart) return;
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO takes (maker, name, takes) VALUES (?, ?, 1)
+       ON CONFLICT (maker, name) DO UPDATE SET takes = takes + 1`,
+    ).bind(cart.maker, cart.name),
+    env.DB.prepare(
+      "INSERT INTO take_days (day, counted) VALUES (?, 1) ON CONFLICT (day) DO UPDATE SET counted = counted + 1",
+    ).bind(day),
+    env.DB.prepare("DELETE FROM taken WHERE day < ?").bind(day),
+    env.DB.prepare("DELETE FROM take_days WHERE day < ?").bind(day),
+  ]);
 }
 
 async function standing(env: Env, id: string): Promise<Response> {
@@ -277,9 +321,14 @@ async function verdict(request: Request, env: Env, ctx: ExecutionContext, id: st
   const check = (said.check ?? {}) as Json;
   const name = String(check.name ?? ""), title = String(check.title ?? ""), kind = String(check.kind ?? "");
   const machine = String(check.machine ?? "");
+  const about = sentence(check.about);
   if (said.sha256 !== row.sha256) return fail("the disk is not the one its maker signed");
-  if (!/^[A-Za-z0-9_-]{1,63}$/.test(name) || title.length > 63 || !KINDS.has(kind) || !/^[0-9.]{1,15}$/.test(machine)) {
+  if (!/^[A-Za-z0-9_-]{1,63}$/.test(name) || !oneLine(title, TITLE_CHARACTERS_MOST) || !KINDS.has(kind) ||
+      !/^[0-9.]{1,15}$/.test(machine)) {
     return fail("the validator's answer did not read");
+  }
+  if (about === null) {
+    return fail(`what a disk says about itself is one line of at most ${ABOUT_CHARACTERS_MOST} characters`);
   }
   const label = Uint8Array.from(atob(String(said.label ?? "")), (c) => c.charCodeAt(0));
   const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -291,11 +340,21 @@ async function verdict(request: Request, env: Env, ctx: ExecutionContext, id: st
     .bind(row.maker, name).first<{ v: number }>();
   const version = (prior?.v ?? 0) + 1;
   await env.DB.prepare(
-    `UPDATE disks SET state = 'live', name = ?, title = ?, kind = ?, machine = ?, version = ?, checked = ?
+    `UPDATE disks SET state = 'live', name = ?, title = ?, about = ?, kind = ?, machine = ?, version = ?, checked = ?
       WHERE id = ?`,
-  ).bind(name, title, kind, machine, version, now(), id).run();
+  ).bind(name, title, about, kind, machine, version, now(), id).run();
   ctx.waitUntil(caches.default.delete(new Request(INDEX_CACHE_KEY)));
   return answer({ id, state: "live", version });
+}
+
+// The maker's one sentence about a disk, as a verdict gives it: trimmed, ""
+// when it gives none (a validator from before disks had one sends none), and
+// null when what it gives is no such sentence.
+function sentence(given: unknown): string | null {
+  if (given === undefined || given === null) return "";
+  if (typeof given !== "string") return null;
+  const words = given.trim();
+  return oneLine(words, ABOUT_CHARACTERS_MOST) ? words : null;
 }
 
 // ---- Reports and David's switches -----------------------------------------------------------
@@ -327,7 +386,7 @@ async function sysop(request: Request, env: Env, url: URL): Promise<Response> {
   const signed = await signedBy(request, url, text);
   if (!signed.ok) return refuse(401, "unsigned", signed.why);
   if (signed.key !== env.SYSOP_KEY) return refuse(403, "not_sysop", "only the sysop may do that");
-  const asked = JSON.parse(text) as { action?: string; id?: string; maker?: string; key?: string };
+  const asked = JSON.parse(text) as { action?: string; id?: string; maker?: string; key?: string; name?: string };
   const db = env.DB;
   const one = async (sql: string, ...values: unknown[]) => (await db.prepare(sql).bind(...values).run()).meta.changes;
   let changed = 0;
@@ -345,6 +404,8 @@ async function sysop(request: Request, env: Env, url: URL): Promise<Response> {
     case "revoke": changed = await one("UPDATE makers SET revoked = 1 WHERE name = ?", asked.maker); break;
     // A maker who lost their key, or whose key was copied: the name moves to a new one.
     case "rekey": changed = await one("UPDATE makers SET key = ?, revoked = 0 WHERE name = ?", asked.key, asked.maker); break;
+    // A cart's takes begin again at none; who took it today stays, so they are not counted twice.
+    case "zero": changed = await one("DELETE FROM takes WHERE maker = ? AND name = ?", asked.maker, asked.name); break;
     case "hidden": {
       const { results } = await db.prepare(
         "SELECT id, maker, name, title, reports, reason FROM disks WHERE state = 'hidden' ORDER BY created DESC LIMIT 100",

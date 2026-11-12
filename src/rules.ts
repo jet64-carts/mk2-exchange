@@ -30,6 +30,27 @@ export const VERDICT_BYTES_MOST = 1 * MIB;
 export const INDEX_SECONDS = 60;
 export const INDEX_DISKS_MOST = 500;
 
+// How long a disk's file and its label are cached.
+export const FILE_SECONDS = 60 * 60;
+
+// Takes counted a day, everyone's together. An address is free to change, so
+// this cap and not the one take a computer carries the weight: a counted take
+// writes at most four rows to D1 (who took, the cart's count, the day's count,
+// and who took swept away on a later day), so a flood of them stops at a fifth
+// of the 100,000 rows D1's free plan writes in a day. Past it a disk is still
+// given, only not counted.
+export const TAKES_COUNTED_A_DAY = 5000;
+
+// A cart's title at most, and its maker's one sentence about it, in characters.
+export const TITLE_CHARACTERS_MOST = 63;
+export const ABOUT_CHARACTERS_MOST = 160;
+
+// Whether `text` is one line of at most `most` characters: it holds no control
+// character, and neither of Unicode's own line breaks.
+export function oneLine(text: string, most: number): boolean {
+  return !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(text) && [...text].length <= most;
+}
+
 // What a signed request's message starts with: the protocol's name and form.
 export const SIGNED_FORM = "jet64-exchange-1";
 
