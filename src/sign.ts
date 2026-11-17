@@ -44,20 +44,20 @@ export async function signedBy(request: Request, url: URL, body: string | null):
   const signature = fromBase64url(request.headers.get("x-jet-signature") ?? "");
   const keyBytes = fromBase64url(key);
   if (!keyBytes || keyBytes.length !== 32 || !signature || signature.length !== 64) {
-    return { ok: false, why: "the request is not signed" };
+    return { ok: false, why: "the request isn't signed" };
   }
   const seconds = Number(time);
   if (!Number.isSafeInteger(seconds) || Math.abs(Date.now() / 1000 - seconds) > CLOCK_SLACK_SECONDS) {
-    return { ok: false, why: "the computer's clock is too far from the exchange's" };
+    return { ok: false, why: "this computer's clock is wrong" };
   }
   if (body !== null && sha256 !== (await sha256Hex(new TextEncoder().encode(body)))) {
-    return { ok: false, why: "the request's body is not the one signed" };
+    return { ok: false, why: "the request changed on the way" };
   }
   const message = [SIGNED_FORM, request.method, url.pathname + url.search, time, sha256].join("\n");
   const publicKey = await crypto.subtle.importKey("raw", keyBytes, { name: "Ed25519" }, false, ["verify"]);
   const good = await crypto.subtle.verify({ name: "Ed25519" }, publicKey, signature,
                                           new TextEncoder().encode(message));
-  return good ? { ok: true, key, sha256 } : { ok: false, why: "the signature does not match" };
+  return good ? { ok: true, key, sha256 } : { ok: false, why: "the signature doesn't match" };
 }
 
 // An address as a salted hash, so the exchange never keeps one.

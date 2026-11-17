@@ -241,7 +241,7 @@ version_by() { # key, maker, n, what the check adds: the verdict's answer; one w
 version() { version_by maker ace "$@"; } # n, what the check adds
 sentence_of() { jq -cn --argjson length "$1" '{about: ("x" * $length)}'; }
 state_of() { field "$1" '"\(.state) \(.version // .reason)"'; }
-refused="failed what a disk says about itself is one line of at most $ABOUT_CHARACTERS_MOST characters"
+refused="failed its description must be one short line"
 
 said=$(version 2 '{"about": "  Rocks, a ship and your nerve.  "}')
 second=$(field "$said" .id)
@@ -258,20 +258,20 @@ check "a sentence one character too long fails its disk" test "$(state_of "$said
 said=$(version 5 '{"about": 5}')
 check "a sentence that is not words fails its disk" test "$(state_of "$said")" = "$refused"
 said=$(version 6 '{"title": "Two\nLines"}')
-check "a title of two lines fails its disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
+check "a title of two lines fails its disk" test "$(state_of "$said")" = "failed the check went wrong"
 said=$(version 7 "$(sentence_of "$ABOUT_CHARACTERS_MOST")")
 check "a sentence of the most characters passes" test "$(state_of "$said")" = "waiting 3"
 said=$(version_by third cee 16 '{"facts": "files"}')
-check "facts that are not a list fail the disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
+check "facts that are not a list fail the disk" test "$(state_of "$said")" = "failed the check went wrong"
 said=$(version_by third cee 17 '{"facts": [{"fact": "writes\nfiles", "by": ["io_write"]}]}')
-check "a fact of two lines fails the disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
+check "a fact of two lines fails the disk" test "$(state_of "$said")" = "failed the check went wrong"
 disk=$(new_disk 18)
 upload=$(field "$(client publish "$OUT/third.key" cee "$disk")" .id)
 jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --rawfile picture "$OUT/label.b64" \
   '{"ok": true, "sha256": $sha256, "rebuilt": {"sha256": $sha256, "bytes": 1}, "check": $check, "label": $picture}' \
   > "$OUT/verdict.json"
 said=$(VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$upload")
-check "a pass whose disk built afresh never came is a failure" test "$(state_of "$said")" = "failed the check did not finish"
+check "a pass whose disk built afresh never came is a failure" test "$(state_of "$said")" = "failed the check didn't finish"
 said=$(version 8 '{}')
 newest=$(field "$said" .id)
 check "a verdict with no sentence, as an older validator's, passes" test "$(state_of "$said")" = "waiting 4"

@@ -26,7 +26,7 @@
 
 import {
   ABOUT_CHARACTERS_MOST, ADDRESS_UPLOADS_A_DAY, DISK_BYTES_MOST, FILE_SECONDS, HIDDEN_LISTED_MOST, INDEX_DISKS_MOST,
-  INDEX_SECONDS, KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST, NAME_PATTERN, FACTS_MOST, FACT_CHARACTERS_MOST, FACT_NAMES_MOST,
+  INDEX_SECONDS, KEY_UPLOADS_A_DAY, LABEL_BYTES_MOST, MIB, NAME_PATTERN, FACTS_MOST, FACT_CHARACTERS_MOST, FACT_NAMES_MOST,
   FACT_NAME_PATTERN, NEW_MAKER_DISK_BYTES_MOST, NEW_MAKER_SECONDS,
   R2_DELETE_KEYS_MOST, REPORTS_THAT_HIDE, RESERVED_FOLDS, TAKES_COUNTED_A_DAY, TITLE_CHARACTERS_MOST, UPLOAD_BYTES_A_DAY,
   UPLOADS_A_DAY, VERDICT_BYTES_MOST, fold, oneLine,
@@ -74,7 +74,7 @@ export default {
       return await route(request, env, ctx);
     } catch (error) {
       console.error(error);
-      return refuse(500, "machine", "the exchange met a fault; please try again later");
+      return refuse(500, "machine", "the exchange hit a fault: try later");
     }
   },
 };
@@ -156,9 +156,9 @@ async function file(request: Request, env: Env, ctx: ExecutionContext, key: stri
   if (cached) return cached;
   const row = await env.DB.prepare("SELECT state, sha256 FROM disks WHERE id = ?").bind(id)
     .first<{ state: string; sha256: string }>();
-  if (!row || row.state !== "live") return refuse(404, "not_found", "no such disk is on the exchange");
+  if (!row || row.state !== "live") return refuse(404, "not_found", "that disk isn't on the exchange");
   const object = await env.DISKS.get(key);
-  if (!object) return refuse(404, "not_found", "no such disk is on the exchange");
+  if (!object) return refuse(404, "not_found", "that disk isn't on the exchange");
   // A yanked disk leaves the cache within an hour; the catalogue stops listing it at once.
   const response = new Response(object.body, {
     headers: { "content-type": type, "cache-control": `public, max-age=${FILE_SECONDS}`, "x-jet-sha256": row.sha256,
@@ -185,7 +185,7 @@ async function forDavid(request: Request, env: Env, url: URL, id: string, key: s
   const row = await env.DB.prepare(`SELECT state, sha256 FROM disks WHERE id = ? AND state IN ${DAVID_SEES}`)
     .bind(id).first<{ state: string; sha256: string }>();
   const object = row ? await env.DISKS.get(key) : null;
-  if (!row || !object) return refuse(404, "not_found", "no such disk is on the exchange");
+  if (!row || !object) return refuse(404, "not_found", "that disk isn't on the exchange");
   return new Response(object.body, {
     headers: { "content-type": type, "cache-control": "no-store", "x-jet-sha256": row.sha256,
                "content-length": String(object.size) },
@@ -258,14 +258,14 @@ async function standing(env: Env, id: string): Promise<Response> {
 // ---- Publishing -----------------------------------------------------------------------------
 
 async function publish(request: Request, env: Env, url: URL): Promise<Response> {
-  if (await paused(env)) return refuse(503, "paused", "the exchange is taking no new disks just now");
+  if (await paused(env)) return refuse(503, "paused", "the exchange is paused: try later");
   const signed = await signedBy(request, url, null);
   if (!signed.ok) return refuse(401, "unsigned", signed.why);
   const maker = url.searchParams.get("maker") ?? "";
   const size = Number(request.headers.get("content-length") ?? "NaN");
-  if (!Number.isSafeInteger(size) || size <= 0) return refuse(411, "no_length", "say the disk's length");
-  if (size > DISK_BYTES_MOST) return refuse(413, "too_large", `a disk may be at most ${DISK_BYTES_MOST} bytes`);
-  if (!/^[0-9a-f]{64}$/.test(signed.sha256)) return refuse(400, "no_hash", "sign the disk's SHA-256");
+  if (!Number.isSafeInteger(size) || size <= 0) return refuse(411, "no_length", "the disk's size wasn't sent");
+  if (size > DISK_BYTES_MOST) return refuse(413, "too_large", `disks may be ${DISK_BYTES_MOST / MIB} MB at most`);
+  if (!/^[0-9a-f]{64}$/.test(signed.sha256)) return refuse(400, "no_hash", "the disk wasn't signed");
 
   // The day's counts, and whether David has banned this address, in one look,
   // before a name is claimed: a banned computer claims none.
@@ -278,19 +278,19 @@ async function publish(request: Request, env: Env, url: URL): Promise<Response> 
        FROM uploads WHERE day = ?3`,
   ).bind(signed.key, ip, day)
     .first<{ all_uploads: number; all_bytes: number; by_key: number; by_ip: number; banned: number }>();
-  if (counts?.banned) return refuse(403, "banned", "this computer may no longer publish");
-  if ((counts?.by_key ?? 0) >= KEY_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
-  if ((counts?.by_ip ?? 0) >= ADDRESS_UPLOADS_A_DAY) return refuse(429, "slow_down", "that is enough disks for today");
+  if (counts?.banned) return refuse(403, "banned", "this computer may not publish");
+  if ((counts?.by_key ?? 0) >= KEY_UPLOADS_A_DAY) return refuse(429, "slow_down", "that's enough disks for today");
+  if ((counts?.by_ip ?? 0) >= ADDRESS_UPLOADS_A_DAY) return refuse(429, "slow_down", "that's enough disks for today");
   if ((counts?.all_uploads ?? 0) >= UPLOADS_A_DAY || (counts?.all_bytes ?? 0) + size > UPLOAD_BYTES_A_DAY) {
-    return refuse(503, "full", "the exchange has taken all it can today; please try again tomorrow");
+    return refuse(503, "full", "the exchange is full: try tomorrow");
   }
 
   const claimed = await claim(env, maker, signed);
   if (claimed instanceof Response) return claimed;
-  if (claimed.revoked) return refuse(403, "revoked", "this key may no longer publish");
+  if (claimed.revoked) return refuse(403, "revoked", "your key may not publish");
   const young = now() - claimed.created < NEW_MAKER_SECONDS;
   if (young && size > NEW_MAKER_DISK_BYTES_MOST) {
-    return refuse(413, "too_large", `in a maker's first week a disk may be at most ${NEW_MAKER_DISK_BYTES_MOST} bytes`);
+    return refuse(413, "too_large", `your first week: disks up to ${NEW_MAKER_DISK_BYTES_MOST / MIB} MB`);
   }
 
   const same = await env.DB.prepare(
@@ -319,17 +319,17 @@ async function claim(env: Env, maker: string, signed: { key: string }): Promise<
   const owned = await env.DB.prepare("SELECT name, key, created, revoked FROM makers WHERE key = ?")
     .bind(signed.key).first<Maker>();
   if (owned) {
-    if (maker && maker !== owned.name) return refuse(409, "one_name", `this key publishes as ${owned.name}`);
+    if (maker && maker !== owned.name) return refuse(409, "one_name", `your key publishes as ${owned.name}`);
     return owned;
   }
   if (!NAME_PATTERN.test(maker)) {
-    return refuse(400, "bad_name", "a name is 2 to 24 lowercase letters, digits, - or _");
+    return refuse(400, "bad_name", "names: 2-24 of a-z, 0-9, - or _");
   }
   const folded = fold(maker);
-  if (RESERVED_FOLDS.has(folded)) return refuse(409, "name_taken", "that name is kept by the machine");
+  if (RESERVED_FOLDS.has(folded)) return refuse(409, "name_taken", "that name is reserved");
   const taken = await env.DB.prepare("SELECT name FROM makers WHERE name = ? OR fold = ?").bind(maker, folded)
     .first<{ name: string }>();
-  if (taken) return refuse(409, "name_taken", `that name is too like ${taken.name}, which is taken`);
+  if (taken) return refuse(409, "name_taken", `too like ${taken.name}, which is taken`);
   const created = now();
   await env.DB.prepare("INSERT INTO makers (name, fold, key, created) VALUES (?, ?, ?, ?)")
     .bind(maker, folded, signed.key, created).run();
@@ -369,7 +369,7 @@ async function remove(request: Request, env: Env, url: URL, id: string): Promise
     `SELECT d.maker, d.name, m.key FROM disks d JOIN makers m ON m.name = d.maker
       WHERE d.id = ? AND d.state IN ${UP}`,
   ).bind(id).first<{ maker: string; name: string | null; key: string }>();
-  if (!row) return refuse(404, "not_found", "no such disk is on the exchange");
+  if (!row) return refuse(404, "not_found", "that disk isn't on the exchange");
   if (row.key !== signed.key) return refuse(403, "not_yours", "only its maker may remove it");
   const removed = await takeDownCart(env, id, "removed", REMOVED_BY_MAKER);
   return answer({ id, removed });
@@ -426,8 +426,8 @@ function bearerOk(request: Request, env: Env): boolean {
 async function rebuilt(request: Request, env: Env, id: string): Promise<Response> {
   if (!bearerOk(request, env)) return refuse(401, "unsigned", "only the validator hands back a disk");
   const size = Number(request.headers.get("content-length") ?? "NaN");
-  if (!Number.isSafeInteger(size) || size <= 0) return refuse(411, "no_length", "say the disk's length");
-  if (size > DISK_BYTES_MOST) return refuse(413, "too_large", `a disk may be at most ${DISK_BYTES_MOST} bytes`);
+  if (!Number.isSafeInteger(size) || size <= 0) return refuse(411, "no_length", "the disk's size wasn't sent");
+  if (size > DISK_BYTES_MOST) return refuse(413, "too_large", `disks may be ${DISK_BYTES_MOST / MIB} MB at most`);
   const row = await env.DB.prepare("SELECT state FROM disks WHERE id = ?").bind(id).first<{ state: string }>();
   if (!row || row.state !== "checking") return refuse(409, "not_checking", "that disk is not being checked");
   await env.DISKS.put(`disks/${id}`, request.body,
@@ -476,27 +476,27 @@ async function verdict(request: Request, env: Env, id: string): Promise<Response
   const machine = String(check.machine ?? "");
   const about = sentence(check.about);
   const facts = factsOf(check.facts);
-  if (said.sha256 !== row.sha256) return fail("the disk is not the one its maker signed");
+  if (said.sha256 !== row.sha256) return fail("the disk changed on the way");
   // The disk built afresh, which the validator has handed back already.
   const built = (said.rebuilt ?? {}) as Json;
   const builtSha = String(built.sha256 ?? ""), builtBytes = Number(built.bytes ?? NaN);
   const object = await env.DISKS.head(`disks/${id}`);
   if (!/^[0-9a-f]{64}$/.test(builtSha) || !object || object.customMetadata?.rebuilt !== "1" ||
       object.size !== builtBytes) {
-    return fail("the checker's own build of the disk did not arrive");
+    return fail("the check didn't finish");
   }
   if (!/^[A-Za-z0-9_-]{1,63}$/.test(name) || !oneLine(title, TITLE_CHARACTERS_MOST) || !KINDS.has(kind) ||
       !/^[0-9.]{1,15}$/.test(machine)) {
-    return fail("the validator's answer did not read");
+    return fail("the check went wrong");
   }
   if (about === null) {
-    return fail(`what a disk says about itself is one line of at most ${ABOUT_CHARACTERS_MOST} characters`);
+    return fail("its description must be one short line");
   }
-  if (facts === null) return fail("the validator's answer did not read");
+  if (facts === null) return fail("the check went wrong");
   const label = Uint8Array.from(atob(String(said.label ?? "")), (c) => c.charCodeAt(0));
   const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
   if (label.length > LABEL_BYTES_MOST || !pngSignature.every((b, i) => label[i] === b)) {
-    return fail("the disk's label is not a small PNG");
+    return fail("its label is too big");
   }
   await env.DISKS.put(`labels/${id}`, label, { httpMetadata: { contentType: "image/png" } });
   const prior = await env.DB.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM disks WHERE maker = ? AND name = ?")
@@ -528,9 +528,9 @@ async function report(request: Request, env: Env, url: URL, id: string): Promise
   const signed = await signedBy(request, url, "");
   if (!signed.ok) return refuse(401, "unsigned", signed.why);
   const revoked = await env.DB.prepare("SELECT 1 FROM makers WHERE key = ? AND revoked = 1").bind(signed.key).first();
-  if (revoked) return refuse(403, "revoked", "this key may no longer report");
+  if (revoked) return refuse(403, "revoked", "your key may not report");
   const row = await env.DB.prepare("SELECT state FROM disks WHERE id = ?").bind(id).first<{ state: string }>();
-  if (!row || row.state !== "live") return refuse(404, "not_found", "no such disk is on the exchange");
+  if (!row || row.state !== "live") return refuse(404, "not_found", "that disk isn't on the exchange");
   const ip = await hashAddress(request, env.IP_SALT ?? "");
   const put = await env.DB.prepare("INSERT OR IGNORE INTO reports (id, key, ip, created) VALUES (?, ?, ?, ?)")
     .bind(id, signed.key, ip, now()).run();

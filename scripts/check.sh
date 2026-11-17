@@ -32,16 +32,16 @@ no() {
 
 [[ "$id" =~ ^[0-9a-f]{32}$ ]] || no "no such upload"
 curl -fsS --max-time 120 --max-filesize "$DISK_BYTES_MOST" -D "$work/headers" \
-  "$EXCHANGE/quarantine/$id" -o "$work/disk.png" || no "the disk could not be fetched"
+  "$EXCHANGE/quarantine/$id" -o "$work/disk.png" || no "the check couldn't fetch it"
 claimed=$(grep -i '^x-jet-sha256:' "$work/headers" | tr -d '\r' | awk '{print tolower($2)}')
 actual=$(sha256sum "$work/disk.png" | cut -c1-64)
-[ -n "$claimed" ] && [ "$claimed" = "$actual" ] || no "the disk is not the one its maker signed"
+[ -n "$claimed" ] && [ "$claimed" = "$actual" ] || no "the disk changed on the way"
 
 if ! answer=$(cd "$VALIDATOR_DIR" && timeout "$SECONDS_MOST" ./mk2disk vet "$work/disk.png" "$REBUILT" "$work/label.png"); then
   no "$(printf '%s' "$answer" | jq -r '.error // empty' 2>/dev/null | head -c 200 || true)"
 fi
-[ "$(stat -c %s "$work/label.png")" -le "$LABEL_BYTES_MOST" ] || no "the disk's label is too large"
-[ "$(stat -c %s "$REBUILT")" -le "$DISK_BYTES_MOST" ] || no "the disk built afresh is past the exchange's 16 MB"
+[ "$(stat -c %s "$work/label.png")" -le "$LABEL_BYTES_MOST" ] || no "its label is too big"
+[ "$(stat -c %s "$REBUILT")" -le "$DISK_BYTES_MOST" ] || no "built, it's over 16 MB"
 base64 -w0 "$work/label.png" > "$work/label.b64"
 jq -cn --arg sha256 "$actual" --argjson check "$answer" --rawfile picture "$work/label.b64" \
   --arg built "$(sha256sum "$REBUILT" | cut -c1-64)" --argjson bytes "$(stat -c %s "$REBUILT")" \

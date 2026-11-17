@@ -21,12 +21,12 @@ failed() {
   printf '{"ok":false,"reason":"%s"}' "$1" > "$file"
 }
 if [ -z "$file" ] || [ ! -s "$file" ]; then
-  failed "the check did not finish"
+  failed "the check didn't finish"
 elif [ "$(jq -r .ok "$file")" = true ]; then
   if [ -z "${REBUILT:-}" ] || [ ! -s "$REBUILT" ] ||
      ! curl -fsS --max-time 300 -X POST -H "authorization: Bearer $VERDICT_TOKEN" \
        -H "content-type: application/octet-stream" --data-binary @"$REBUILT" "$EXCHANGE/rebuilt/$id" > /dev/null; then
-    failed "the check did not finish"
+    failed "the check didn't finish"
   fi
 fi
 curl -fsS --max-time 60 -X POST \
