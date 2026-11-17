@@ -23,7 +23,7 @@ client() {
   if command -v node > /dev/null; then
     node scripts/exchange.mjs "$@"
   else
-    docker run --rm -e EXCHANGE -v "$PWD":/x -w /x node:22-bookworm node scripts/exchange.mjs "$@"
+    docker run --rm --platform linux/amd64 -e EXCHANGE -v "$PWD":/x -w /x node:22-bookworm node scripts/exchange.mjs "$@"
   fi
 }
 
