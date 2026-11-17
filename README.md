@@ -2,8 +2,10 @@
 
 Where people swap disks. A maker ticks EXCHANGE in the island's EXPORT; the disk
 file streams through this Worker into a private R2 bucket; a GitHub Action runs
-the machine's own validator over it; and within about a minute it is on the
-board for everyone to TAKE.
+the machine's own validator over it, refuses a game that goes online, and builds
+its game afresh from its C; and it waits for David. Once an agent has read it
+(`REVIEW.md`) and David has passed it, it is on the board for everyone to TAKE
+(R85, `docs/exchange_review.md` in the machine's repository).
 
 - **`src/`** — the Worker, the only door (routes listed at the top of
   `src/index.ts`). It never parses a disk.
@@ -11,10 +13,12 @@ board for everyone to TAKE.
   `scripts/catalogue.sh` lays it, and brings a database laid earlier up to it
   with the one-time steps in `migrations/`.
 - **`.github/workflows/check.yml`** — the validator: one job reads the stranger's
-  disk with no permissions and no secrets, a second hands the verdict back.
-  The one action used is pinned by its commit SHA, the runner by its image.
+  disk with no permissions and no secrets and builds its game with the pinned
+  Zig, a second hands the disk built and the verdict back. Every action is
+  pinned by its commit SHA, every download by its SHA-256, the runner by its image.
 - **`scripts/exchange.mjs`** — a client in one file: keys, publish, take,
   report, and the sysop's switches.
+- **`REVIEW.md`** and **`scripts/review.sh`** — how an agent reviews a disk that waits.
 - **`tests/e2e.sh`** — the whole exchange on one machine, the validator run by hand.
 
 ## What the catalogue says
@@ -30,9 +34,9 @@ one name. Each entry:
 | `name`, `title`, `kind` | The cart's name and title, and `game`, `theme` or `tool`. |
 | `about` | The maker's one sentence about it: one line of at most 160 characters, `""` when there is none. |
 | `machine` | The machine version it was made on. |
-| `bytes`, `sha256` | The disk file's size and hash. |
+| `bytes`, `sha256` | The disk file's size and hash: the disk the validator built, which is the one taken. |
 | `version` | 1, 2, ... for each live upload of the cart. |
-| `checked` | When the validator passed it, in unix seconds. |
+| `checked` | When David passed it, in unix seconds. |
 | `takes` | How often the cart has been taken, every version together. |
 
 A take is one `GET /disk/<id>` of a live disk, counted after the answer is on
@@ -60,7 +64,7 @@ Once, on a Mac with Docker and `gh`:
    Token → *Edit Cloudflare Workers* template; add **Account · D1 · Edit**;
    account resources: your account; zone resources: jet64.com. Copy the token.
 2. **The validator's release.** From this folder:
-   `scripts/release-validator.sh ../jet64/mk2 --release 0.4.0`, and check the
+   `scripts/release-validator.sh ../jet64/mk2 --release 0.4.0-4`, and check the
    SHA-256 it prints is the one in `check.yml`.
 3. **A GitHub token that may only start the validator.** GitHub → Settings →
    Developer settings → Fine-grained tokens → Generate: repository access *only
@@ -74,7 +78,7 @@ Once, on a Mac with Docker and `gh`:
    any bill at all is an email at once.
 
 To take a change live, run `scripts/live.sh`: it asks for the Cloudflare token
-and runs step 4 again. With a version, `scripts/live.sh 0.4.0-2`, it first
+and runs step 4 again. With a version, `scripts/live.sh 0.4.0-4`, it first
 builds and releases that validator from the machine's checkout, pins it in
 `check.yml`, and commits and pushes the pin. Step 4 passes over what is done already,
 brings the database up to `schema.sql` first (new tables, and each column in
@@ -82,14 +86,26 @@ brings the database up to `schema.sql` first (new tables, and each column in
 
 ## Day to day
 
-Nothing per disk. A disk reported by three keys from three addresses is hidden
-until you look; `hidden` lists them, each as the catalogue would with its
-`reports` and `reason`, and `label` fetches a hidden disk's label for you alone:
+Every new disk, and every new version, waits for you. So does a disk reported
+by three keys from three addresses. EXCHANGE's WAITING page shows both: a new
+one says *new* and offers PASS, a reported one says how many reported it and
+offers KEEP. Point an agent at each new one first:
+
+```console
+$ scripts/review.sh            # what waits
+$ scripts/review.sh <id>       # laid out in reviews/<id>/ for the agent, who follows REVIEW.md
+```
+
+`hidden` lists them all, each as the catalogue would with its `reports`, its
+`reason` and the checker's `facts`; `label` and `review` fetch a waiting disk's
+label and file for you alone:
 
 ```console
 $ node scripts/exchange.mjs sysop sysop.key hidden
 $ node scripts/exchange.mjs label <id> label.png sysop.key  # what it shows
-$ node scripts/exchange.mjs sysop sysop.key keep <id>       # it was fine: live again, its reports forgotten
+$ node scripts/exchange.mjs review sysop.key <id> disk.png  # the disk itself
+$ node scripts/exchange.mjs sysop sysop.key pass <id>       # reviewed and fine: live
+$ node scripts/exchange.mjs sysop sysop.key keep <id>       # reported but fine: live again, its reports forgotten
 $ node scripts/exchange.mjs sysop sysop.key remove <id>     # it was not: the whole cart comes down
 $ node scripts/exchange.mjs sysop sysop.key ban <maker>     # the key revoked, every disk down, its addresses barred
 $ node scripts/exchange.mjs sysop sysop.key unban <maker>   # it may publish again; its disks stay down
@@ -118,5 +134,7 @@ Without Node on the Mac, run any of these as
 $ docker run --rm --platform linux/amd64 -v "$PWD":/x -w /x -v <folder>:/v node:22-bookworm bash tests/e2e.sh
 ```
 
-where `<folder>` holds `mk2disk-linux-x86_64`, `small.disk.png` (a whole disk
-under 4 MiB) and `large.disk.png` (one over 4 MiB).
+where `<folder>` holds `validator/` (the validator's archive, unpacked), `zig/`
+(Zig 0.16 for Linux x86-64, unpacked), `small.disk.png` (a whole game with its C,
+under 4 MiB, that goes nowhere online), `net.disk.png` (a game that goes online)
+and `large.disk.png` (any file over 4 MiB).

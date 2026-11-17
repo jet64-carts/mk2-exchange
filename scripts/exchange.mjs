@@ -13,12 +13,15 @@
 //   node scripts/exchange.mjs report <file> <id>              report a disk
 //   node scripts/exchange.mjs remove <file> <id>              take down your own cart, every version
 //   node scripts/exchange.mjs label <id> <out> [file]         save a disk's label; signed by the
-//                                                             sysop's key, a hidden disk's too
+//                                                             sysop's key, a waiting or hidden disk's too
+//   node scripts/exchange.mjs review <file> <id> <out>        save a waiting or hidden disk's file, to
+//                                                             review it; signed by the sysop's key
 //   node scripts/exchange.mjs sysop <file> <action> [id|maker] [new key|cart]
 //       pause, resume, remove <id> (the whole cart; yank is its older name),
-//       hide <id>, keep <id> (a hidden disk was fine; unhide is its older name),
+//       hide <id>, pass <id> (a new disk reviewed and let live), keep <id> (a hidden
+//       disk was fine; unhide is its older name; pass and keep are one switch),
 //       ban <maker>, unban <maker>, vouch <maker>, unvouch <maker>,
-//       revoke <maker>, rekey <maker> <key>, hidden,
+//       revoke <maker>, rekey <maker> <key>, hidden (what waits for review: new and reported),
 //       zero <maker> <cart> (the cart's takes begin again at 0)
 //
 // EXCHANGE names the exchange; https://exchange.jet64.com when unset.
@@ -78,9 +81,9 @@ async function say(response) {
   return text;
 }
 
-// A disk's label saved to `out`, or the refusal said.
-async function saveLabel(id, out, keyPath) {
-  const path = `/label/${id}`;
+// What `path` answers saved to `out`, signed by the key at `keyPath` when one
+// is named; or the refusal said.
+async function save(path, out, keyPath) {
   const response = keyPath ? await signedRequest(keyPath, "GET", path) : await fetch(EXCHANGE + path);
   if (!response.ok) return say(response);
   writeFileSync(out, Buffer.from(await response.arrayBuffer()));
@@ -101,11 +104,12 @@ switch (command) {
   case "index": await say(await fetch(`${EXCHANGE}/index`)); break;
   case "report": await signed(rest[0], "POST", `/report/${rest[1]}`); break;
   case "remove": await signed(rest[0], "POST", `/remove/${rest[1]}`); break;
-  case "label": await saveLabel(rest[0], rest[1], rest[2]); break;
+  case "label": await save(`/label/${rest[0]}`, rest[1], rest[2]); break;
+  case "review": await save(`/review/${rest[1]}`, rest[2], rest[0]); break;
   case "sysop": {
     const [keyPath, action, target, second] = rest;
     const asked = { action };
-    if (["remove", "yank", "hide", "keep", "unhide"].includes(action)) asked.id = target;
+    if (["remove", "yank", "hide", "pass", "keep", "unhide"].includes(action)) asked.id = target;
     if (["ban", "unban", "vouch", "unvouch", "revoke", "rekey", "zero"].includes(action)) asked.maker = target;
     if (action === "rekey") asked.key = second;
     if (action === "zero") asked.name = second;
@@ -114,6 +118,6 @@ switch (command) {
     break;
   }
   default:
-    console.error("usage: node scripts/exchange.mjs key|public|publish|state|index|report|remove|label|sysop ...");
+    console.error("usage: node scripts/exchange.mjs key|public|publish|state|index|report|remove|label|review|sysop ...");
     process.exitCode = 2;
 }

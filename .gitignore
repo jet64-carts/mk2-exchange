@@ -4,3 +4,4 @@ node_modules/
 *.key
 tests/out/
 .secrets-set
+reviews/

@@ -7,8 +7,8 @@
 #
 #   scripts/live.sh                the database brought up to date, the Worker deployed,
 #                                  and sysop.key copied where the workstation reads it
-#   scripts/live.sh 0.4.0-2        first a new validator, built from the machine's
-#                                  checkout, released as validator-0.4.0-2 and pinned in
+#   scripts/live.sh 0.4.0-4        first a new validator, built from the machine's
+#                                  checkout, released as validator-0.4.0-4 and pinned in
 #                                  the workflow, that pin committed and pushed
 #
 # The machine's checkout is ~/Documents/GitHub/jet64/mk2, or what MK2 names. Safe
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 readonly REPO=jet64-carts/mk2-exchange
-readonly ASSET=mk2disk-linux-x86_64
+readonly ASSET=mk2-validator-linux-x86_64.tar.gz
 readonly WORKFLOW=.github/workflows/check.yml
 # Where the workstation looks for the sysop's key, to show David's switches.
 readonly ISLAND_KEY="$HOME/Library/Application Support/Jet64 Mk II/island/exchange/sysop.key"

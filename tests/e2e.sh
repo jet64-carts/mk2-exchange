@@ -11,13 +11,15 @@
 #     -v <folder holding mk2disk-linux-x86_64 and the test disks>:/v \
 #     node:22-bookworm bash tests/e2e.sh
 #
-# /v holds mk2disk-linux-x86_64, small.disk.png (a whole disk under 4 MiB) and
-# large.disk.png (a whole disk over 4 MiB).
+# /v holds validator/ (the validator's release archive, unpacked), zig/ (the
+# pinned Zig 0.16 for Linux x86-64, unpacked), small.disk.png (a whole game with
+# its C, under 4 MiB, that goes nowhere online), net.disk.png (a whole game that
+# goes online) and large.disk.png (any file over 4 MiB).
 set -euo pipefail
 
 export EXCHANGE=http://127.0.0.1:8787
 export VERDICT_TOKEN=test-verdict-token
-export VALIDATOR=/v/mk2disk-linux-x86_64
+export VALIDATOR_DIR=/v/validator MK2_ZIG=/v/zig/zig
 OUT=tests/out
 # Other computers, by addresses kept for documents (RFC 5737). Cloudflare names
 # a caller's address in a header nobody can set from outside; here nothing does,
@@ -92,9 +94,27 @@ trap 'kill $worker 2>/dev/null; rm -f .dev.vars' EXIT
 for _ in $(seq 60); do curl -fsS "$EXCHANGE/" >/dev/null 2>&1 && break; sleep 1; done
 check "the Worker answers" curl -fsS "$EXCHANGE/" -o /dev/null
 
-validate() { # id: both halves of the Action, by hand, the verdict passed as a file as the Action passes it
-  scripts/check.sh "$1" > "$OUT/verdict.json"
-  VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$1"
+validate() { # id: both halves of the Action, by hand, the verdict and the disk built passed as files as the Action passes them
+  rm -f "$OUT/rebuilt.disk.png"
+  REBUILT="$PWD/$OUT/rebuilt.disk.png" scripts/check.sh "$1" > "$OUT/verdict.json"
+  VERDICT_FILE="$OUT/verdict.json" REBUILT="$OUT/rebuilt.disk.png" scripts/report.sh "$1"
+}
+# A request signed by the sysop's key, its answer's status code, and its body saved to `$2`.
+sysop_get() { # path, out
+  node --input-type=module -e '
+    import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
+    import { readFileSync, writeFileSync } from "node:fs";
+    const [keyPath, path, out] = process.argv.slice(1);
+    const key = createPrivateKey(readFileSync(keyPath));
+    const spki = createPublicKey(key).export({ type: "spki", format: "der" });
+    const time = String(Math.floor(Date.now() / 1000));
+    const hash = createHash("sha256").update("").digest("hex");
+    const signature = sign(null, Buffer.from(["jet64-exchange-1", "GET", path, time, hash].join("\n")), key);
+    const response = await fetch(process.env.EXCHANGE + path, { headers: {
+      "x-jet-key": Buffer.from(spki.subarray(spki.length - 32)).toString("base64url"), "x-jet-time": time,
+      "x-jet-sha256": hash, "x-jet-signature": signature.toString("base64url") } });
+    writeFileSync(out, Buffer.from(await response.arrayBuffer()));
+    console.log(response.status);' "$OUT/sysop.key" "$1" "$2"
 }
 
 # ---- Names ---------------------------------------------------------------------------------
@@ -121,14 +141,32 @@ said=$(curl -s -X POST -H "content-type: application/json" --data '{"ok":true}' 
 check "a verdict without the validator's token is refused" has "$said" unsigned
 
 said=$(validate "$id")
-check "the validator passes a whole disk" test "$(field "$said" .state)" = live
-index=$(curl -fsS "$EXCHANGE/index")
+check "a disk that passes the validator waits for review (R85)" test "$(field "$said" .state)" = waiting
+check "a waiting disk is not listed" test "$(fresh_index | jq '.disks | length')" = 0
+check "a waiting disk cannot be taken" test "$(curl -s -o /dev/null -w '%{http_code}' "$EXCHANGE/disk/$id")" = 404
+check "a waiting disk cannot be reported" has "$(client report "$OUT/other.key" "$id")" not_found
+said=$(client publish "$OUT/maker.key" "ace" /v/small.disk.png)
+check "the disk its maker sent, sent again, is the same upload" test "$(field "$said" .id)" = "$id"
+listed=$(client sysop "$OUT/sysop.key" hidden)
+check "David's list shows the new disk, with no reports and the checker's facts" \
+  test "$(jq -r --arg id "$id" '.hidden[] | select(.id == $id) | "\(.reports) \(.facts | type)"' <<<"$listed")" = "0 array"
+built=$(curl -fsS "$EXCHANGE/disks/$id" | jq -r .disk.sha256)
+check "the catalogue's hash is the disk the checker built, and the maker's is kept beside it" \
+  test "$(d1 "SELECT sent FROM disks WHERE id = '$id'" | jq -r .sent)" = "$(sha256sum /v/small.disk.png | cut -c1-64)"
+check "David fetches a waiting disk to review it" test "$(sysop_get "/review/$id" "$OUT/review.disk.png")" = 200
+check "the disk reviewed is the disk the checker built" test "$(sha256sum "$OUT/review.disk.png" | cut -c1-64)" = "$built"
+check "nobody else fetches a waiting disk" test "$(curl -s -o /dev/null -w '%{http_code}' "$EXCHANGE/review/$id")" = 404
+check "David is shown a waiting disk's label" test "$(sysop_get "/label/$id" "$OUT/waiting.png")" = 200
+said=$(client sysop "$OUT/sysop.key" pass "$id")
+check "David passes a waiting disk" test "$(field "$said" .changed)" = 1
+index=$(fresh_index)
 check "the live disk is listed with its maker and kind" \
   test "$(jq -r '.disks[0] | "\(.maker) \(.kind) \(.version)"' <<<"$index")" = "ace game 1"
 cart=$(jq -r '.disks[0].name' <<<"$index")
 check "a disk nobody has taken lists no takes" test "$(jq -r '.disks[0].takes' <<<"$index")" = 0
 curl -fsS "$EXCHANGE/disk/$id" -o "$OUT/taken.disk.png"
-check "the disk taken is the disk sent" cmp -s "$OUT/taken.disk.png" /v/small.disk.png
+check "the disk taken is the disk the checker built" test "$(sha256sum "$OUT/taken.disk.png" | cut -c1-64)" = "$built"
+check "and the catalogue lists it by that hash" test "$(jq -r '.disks[0].sha256' <<<"$index")" = "$built"
 curl -fsS "$EXCHANGE/label/$id" -o "$OUT/label.png"
 check "its label is a PNG" test "$(head -c 4 "$OUT/label.png" | od -An -c | tr -d ' ')" = "211PNG"
 check "a take is counted for the disk's cart" counted "$cart" 1
@@ -147,6 +185,12 @@ check "the validator fails a damaged disk, and says why" \
   test "$(field "$said" .state)" = failed -a -n "$(field "$said" .reason)"
 check "a failed upload says why to its maker" \
   test "$(curl -fsS "$EXCHANGE/disks/$bad" | jq -r .disk.state)" = failed
+
+# ---- A game that goes online (R85) ---------------------------------------------------------
+online=$(field "$(client publish "$OUT/third.key" "cee" /v/net.disk.png)" .id)
+said=$(validate "$online")
+check "the validator fails a game that goes online, and says why" \
+  test "$(field "$said" '"\(.state) \(.reason | test("goes online"))"')" = "failed true"
 
 # ---- Reports -------------------------------------------------------------------------------
 for key in other third maker; do client report "$OUT/$key.key" "$id" > /dev/null; done
@@ -181,14 +225,18 @@ new_disk() { # n: a disk of new bytes; prints where it is
   { cat /v/small.disk.png; echo "$1"; } > "$OUT/v$1.disk.png"
   echo "$OUT/v$1.disk.png"
 }
-version_by() { # key, maker, n, what the check adds
-  local disk upload
+version_by() { # key, maker, n, what the check adds: the verdict's answer; one waiting is then passed by David
+  local disk upload sha said
   disk=$(new_disk "$3")
   upload=$(field "$(client publish "$OUT/$1.key" "$2" "$disk")" .id)
-  jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --argjson more "$4" \
-    --rawfile picture "$OUT/label.b64" '{"ok": true, "sha256": $sha256, "check": ($check + $more), "label": $picture}' \
-    > "$OUT/verdict.json"
-  VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$upload"
+  sha=$(sha256sum "$disk" | cut -c1-64)
+  jq -cn --arg sha256 "$sha" --argjson check "$checked" --argjson more "$4" --argjson bytes "$(stat -c %s "$disk")" \
+    --rawfile picture "$OUT/label.b64" \
+    '{"ok": true, "sha256": $sha256, "rebuilt": {"sha256": $sha256, "bytes": $bytes}, "check": ($check + $more),
+      "label": $picture}' > "$OUT/verdict.json"
+  said=$(VERDICT_FILE="$OUT/verdict.json" REBUILT="$disk" scripts/report.sh "$upload")
+  [ "$(field "$said" .state)" = waiting ] && client sysop "$OUT/sysop.key" pass "$upload" > /dev/null
+  echo "$said"
 }
 version() { version_by maker ace "$@"; } # n, what the check adds
 sentence_of() { jq -cn --argjson length "$1" '{about: ("x" * $length)}'; }
@@ -197,7 +245,7 @@ refused="failed what a disk says about itself is one line of at most $ABOUT_CHAR
 
 said=$(version 2 '{"about": "  Rocks, a ship and your nerve.  "}')
 second=$(field "$said" .id)
-check "a verdict may carry the maker's sentence" test "$(state_of "$said")" = "live 2"
+check "a verdict may carry the maker's sentence" test "$(state_of "$said")" = "waiting 2"
 check "the sentence is listed, trimmed, and the cart keeps the takes of the version before" \
   test "$(curl -fsS "$EXCHANGE/index" | jq -r '.disks[0] | "\(.id)|\(.about)|\(.takes)"')" \
     = "$second|Rocks, a ship and your nerve.|2"
@@ -212,10 +260,21 @@ check "a sentence that is not words fails its disk" test "$(state_of "$said")" =
 said=$(version 6 '{"title": "Two\nLines"}')
 check "a title of two lines fails its disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
 said=$(version 7 "$(sentence_of "$ABOUT_CHARACTERS_MOST")")
-check "a sentence of the most characters passes" test "$(state_of "$said")" = "live 3"
+check "a sentence of the most characters passes" test "$(state_of "$said")" = "waiting 3"
+said=$(version_by third cee 16 '{"facts": "files"}')
+check "facts that are not a list fail the disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
+said=$(version_by third cee 17 '{"facts": [{"fact": "writes\nfiles", "by": ["io_write"]}]}')
+check "a fact of two lines fails the disk" test "$(state_of "$said")" = "failed the validator's answer did not read"
+disk=$(new_disk 18)
+upload=$(field "$(client publish "$OUT/third.key" cee "$disk")" .id)
+jq -cn --arg sha256 "$(sha256sum "$disk" | cut -c1-64)" --argjson check "$checked" --rawfile picture "$OUT/label.b64" \
+  '{"ok": true, "sha256": $sha256, "rebuilt": {"sha256": $sha256, "bytes": 1}, "check": $check, "label": $picture}' \
+  > "$OUT/verdict.json"
+said=$(VERDICT_FILE="$OUT/verdict.json" scripts/report.sh "$upload")
+check "a pass whose disk built afresh never came is a failure" test "$(state_of "$said")" = "failed the check did not finish"
 said=$(version 8 '{}')
 newest=$(field "$said" .id)
-check "a verdict with no sentence, as an older validator's, passes" test "$(state_of "$said")" = "live 4"
+check "a verdict with no sentence, as an older validator's, passes" test "$(state_of "$said")" = "waiting 4"
 check "a disk whose verdict had no sentence lists none" \
   test "$(curl -fsS "$EXCHANGE/index" | jq -r '.disks[0] | "\(.id)|\(.about)|\(.takes)"')" = "$newest||3"
 
@@ -278,7 +337,7 @@ check "reports from three keys and three addresses hide a disk" test "$(field "$
 listed=$(client sysop "$OUT/sysop.key" hidden)
 check "the hidden list gives a disk as the catalogue does, with its reports and why" \
   test "$(jq -c '.hidden[0] | keys' <<<"$listed")" \
-    = '["about","bytes","checked","id","kind","machine","maker","name","reason","reports","sha256","takes","title","version","vouched"]'
+    = '["about","bytes","checked","facts","id","kind","machine","maker","name","reason","reports","sha256","takes","title","version","vouched"]'
 check "the hidden list names the disk, vouched as a yes or no, and its reports" \
   test "$(jq -r '.hidden[0] | "\(.id) \(.vouched) \(.reports)"' <<<"$listed")" = "$held false 3"
 said=$(client label "$held" "$OUT/hidden.png" "$OUT/sysop.key")

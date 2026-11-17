@@ -29,7 +29,8 @@ export const VERDICT_BYTES_MOST = 1 * MIB;
 // The most objects R2 deletes in one call, when a cart or a maker comes down.
 export const R2_DELETE_KEYS_MOST = 1000;
 
-// How many hidden disks the sysop's list shows at once, newest first.
+// How many disks the sysop's list of those waiting shows at once, newest first:
+// new ones waiting for review (R85), and those reports hid.
 export const HIDDEN_LISTED_MOST = 100;
 
 // How long the catalogue is cached, and how many disks it lists.
@@ -46,6 +47,14 @@ export const FILE_SECONDS = 60 * 60;
 // of the 100,000 rows D1's free plan writes in a day. Past it a disk is still
 // given, only not counted.
 export const TAKES_COUNTED_A_DAY = 5000;
+
+// The facts the checker finds for a reviewer (docs/exchange_review.md §4): how
+// many at most, each a line of at most so many characters, said by at most so
+// many of the box's calls or the firmware's verbs, each a C name.
+export const FACTS_MOST = 32;
+export const FACT_CHARACTERS_MOST = 120;
+export const FACT_NAMES_MOST = 16;
+export const FACT_NAME_PATTERN = /^[a-z_][a-z0-9_]{0,63}$/;
 
 // A cart's title at most, and its maker's one sentence about it, in characters.
 export const TITLE_CHARACTERS_MOST = 63;

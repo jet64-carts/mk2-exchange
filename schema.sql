@@ -17,13 +17,14 @@ CREATE TABLE IF NOT EXISTS makers (
   vouched  INTEGER NOT NULL DEFAULT 0  -- 1: David's mark beside the name
 );
 
--- A disk: one upload, from quarantine to live (or failed, hidden, yanked, removed).
+-- A disk: one upload, from quarantine to waiting for David's review, then live
+-- (or failed, hidden, yanked, removed).
 CREATE TABLE IF NOT EXISTS disks (
   id       TEXT PRIMARY KEY,           -- random, hex
   maker    TEXT NOT NULL,
-  sha256   TEXT NOT NULL,              -- of the disk file, as the maker signed it
+  sha256   TEXT NOT NULL,              -- of the disk file: as the maker signed it, then as the checker built it
   bytes    INTEGER NOT NULL,
-  state    TEXT NOT NULL,              -- checking | live | failed | hidden | yanked | removed
+  state    TEXT NOT NULL,              -- checking | waiting | live | failed | hidden | yanked | removed
   reason   TEXT,                       -- why it failed, or who hid or removed it
   name     TEXT,                       -- the cart's name, from its head, once checked
   title    TEXT,
@@ -33,7 +34,9 @@ CREATE TABLE IF NOT EXISTS disks (
   created  INTEGER NOT NULL,
   checked  INTEGER,
   reports  INTEGER NOT NULL DEFAULT 0,
-  about    TEXT NOT NULL DEFAULT ''    -- its maker's one sentence, once checked (migrations/0001)
+  about    TEXT NOT NULL DEFAULT '',   -- its maker's one sentence, once checked (migrations/0001)
+  sent     TEXT,                       -- the file its maker sent, by its SHA-256, once the checker built it afresh (migrations/0003)
+  facts    TEXT NOT NULL DEFAULT '[]'  -- what the checker found for the reviewer, as JSON (migrations/0003)
 );
 CREATE INDEX IF NOT EXISTS disks_by_state ON disks (state, created);
 CREATE INDEX IF NOT EXISTS disks_by_sha ON disks (sha256);

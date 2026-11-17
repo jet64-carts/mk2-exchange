@@ -25,6 +25,7 @@ d1 --file schema.sql
 # the look fail for a reason of its own, the migration is refused as a column
 # already there, and nothing is harmed.
 answers "SELECT about FROM disks LIMIT 0" || d1 --file migrations/0001_disks_about.sql
+answers "SELECT facts FROM disks LIMIT 0" || d1 --file migrations/0003_review.sql
 # A table or an index may be made where it is not, so these run every time,
 # harmless twice, as schema.sql is.
 d1 --file migrations/0002_bans.sql

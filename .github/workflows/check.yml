@@ -1,10 +1,12 @@
 # mk2-exchange/.github/workflows/check.yml
 #
-# The validator (docs/exchange.md §6 in the machine's repository), started by
-# the Worker for each upload. Two jobs: the first reads the stranger's disk with
-# no permissions and no secrets; the second never touches it and holds the one
-# secret. Every action is pinned by its full commit SHA and the runner by its
-# image, so nothing moves underneath.
+# The validator (docs/exchange.md §6 and docs/exchange_review.md §4 in the
+# machine's repository), started by the Worker for each upload. Two jobs: the
+# first reads the stranger's disk with no permissions and no secrets, and builds
+# its game afresh from its C with the machine's own compiler and the pinned Zig;
+# the second never opens it, holds the one secret, and hands back the disk built
+# and the verdict. Every action is pinned by its full commit SHA, every download
+# by its SHA-256, and the runner by its image, so nothing moves underneath.
 #
 # The verdict passes between them as a file, never a job output: it carries the
 # label as base64, and handed to a step as an environment variable, a label
@@ -23,34 +25,43 @@ permissions: {}
 
 env:
   EXCHANGE: https://exchange.jet64.com
-  # mk2disk for Linux x86-64, built by scripts/release-validator.sh from the
-  # machine's own disk/ and pinned here by its SHA-256.
-  VALIDATOR_URL: https://github.com/jet64-carts/mk2-exchange/releases/download/validator-0.4.0-3/mk2disk-linux-x86_64
-  VALIDATOR_SHA256: 6d34695f4d4fb3f59fb0d8c25822058e453b2f63801601d18f7356ee6d41443d
+  # mk2disk for Linux x86-64 and the machine's sources a build reads, one
+  # archive built by scripts/release-validator.sh and pinned here by its SHA-256.
+  VALIDATOR_URL: https://github.com/jet64-carts/mk2-exchange/releases/download/validator-0.4.0-4/mk2-validator-linux-x86_64.tar.gz
+  VALIDATOR_SHA256: 0000000000000000000000000000000000000000000000000000000000000000
+  # The Zig every workstation builds with (the machine's boat/pins.h), from ziglang.org.
+  ZIG_URL: https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+  ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
 
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions: {}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Fetch the validator
+      - name: Fetch the validator and Zig
         run: |
-          curl -fsSL --max-time 60 "$VALIDATOR_URL" -o "$RUNNER_TEMP/mk2disk"
-          echo "$VALIDATOR_SHA256  $RUNNER_TEMP/mk2disk" | sha256sum -c -
-          chmod +x "$RUNNER_TEMP/mk2disk"
-      - name: Check the disk
+          curl -fsSL --max-time 120 "$VALIDATOR_URL" -o "$RUNNER_TEMP/validator.tar.gz"
+          echo "$VALIDATOR_SHA256  $RUNNER_TEMP/validator.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/validator" && tar xzf "$RUNNER_TEMP/validator.tar.gz" -C "$RUNNER_TEMP/validator"
+          curl -fsSL --max-time 300 "$ZIG_URL" -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/zig" && tar xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components 1
+      - name: Check the disk, and build its game afresh
         env:
           ID: ${{ inputs.id }}
-        run: VALIDATOR="$RUNNER_TEMP/mk2disk" scripts/check.sh "$ID" > "$RUNNER_TEMP/verdict.json"
-      - name: Keep the verdict for the second job
+        run: |
+          mkdir "$RUNNER_TEMP/verdict"
+          VALIDATOR_DIR="$RUNNER_TEMP/validator" MK2_ZIG="$RUNNER_TEMP/zig/zig" \
+            REBUILT="$RUNNER_TEMP/verdict/rebuilt.disk.png" scripts/check.sh "$ID" > "$RUNNER_TEMP/verdict/verdict.json"
+      - name: Keep the verdict and the disk built for the second job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verdict
-          path: ${{ runner.temp }}/verdict.json
+          path: ${{ runner.temp }}/verdict/
           retention-days: 1
           if-no-files-found: error
 
@@ -58,7 +69,7 @@ jobs:
     needs: check
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
     permissions: {}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -71,9 +82,10 @@ jobs:
         with:
           name: verdict
           path: ${{ runner.temp }}/verdict
-      - name: Hand back the verdict
+      - name: Hand back the disk built, then the verdict
         env:
           ID: ${{ inputs.id }}
           VERDICT_FILE: ${{ runner.temp }}/verdict/verdict.json
+          REBUILT: ${{ runner.temp }}/verdict/rebuilt.disk.png
           VERDICT_TOKEN: ${{ secrets.VERDICT_TOKEN }}
         run: scripts/report.sh "$ID"
